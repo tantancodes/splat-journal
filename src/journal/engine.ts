@@ -9,6 +9,7 @@ import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { SparkRenderer, SplatMesh, dyno } from "@sparkjsdev/spark";
 import { normalizeNoteStyle } from "./note-style.js";
+import { listPages, getPage, createPage, savePage, deletePage, takeLegacy } from "./store";
 import { PenLine, rng, hash, f1, openCurve, loopPts, overLine, rectStrokes, inkOutline, keepSketching, reducedMotion } from "./pen";
 
 type Vec3 = [number, number, number];
@@ -83,7 +84,7 @@ function letterTitle() {
   const t = $("title");
   if (document.activeElement === t) return; // plain text while it is being edited
   t.textContent = "";
-  const text = page.title || "", r = rng(hash(text) ^ 0x51ed);
+  const text = page?.title || "", r = rng(hash(text) ^ 0x51ed);
   for (const ch of text) {
     const s = document.createElement("span");
     s.className = "ch";
@@ -102,7 +103,7 @@ function drawTitleLine() {
   let w = 104;
   if (t.textContent.trim()) { const r = document.createRange(); r.selectNodeContents(t); w = Math.min(r.getBoundingClientRect().width, t.offsetWidth); }
   const x = t.offsetLeft + t.offsetWidth - w, y = t.offsetTop + t.offsetHeight + 1;
-  penIn(host, "title", { width: 1.05, taper: 7 }).set(overLine(x - 4, y + 0.5, x + w + 5, y - 1, hash(page.title || "untitled") ^ 17, 0.6));
+  penIn(host, "title", { width: 1.05, taper: 7 }).set(overLine(x - 4, y + 0.5, x + w + 5, y - 1, hash(page?.title || "untitled") ^ 17, 0.6));
 }
 
 // ---------- the scan: a loosely cut print pasted into the page ----------
@@ -114,9 +115,9 @@ function measurePhoto() {
 }
 // walk round the photo's rectangle, pushing the edge in and out at three scales,
 // with a couple of small bites where it tore; then feather the whole thing
-function tornEdgeMask() {
-  const W = window.innerWidth, H = window.innerHeight, { x, y, w, h } = photo, r = rng(tornSeed);
-  const per = 2 * (w + h), step = 7, n = Math.ceil(per / step);
+function tornMaskUrl(W, H, { x, y, w, h }, seed, blur = 7) {
+  const r = rng(seed), size = Math.min(1, Math.max(0.45, Math.min(w, h) / 300)); // small prints tear finer
+  const per = 2 * (w + h), step = 7 * size, n = Math.ceil(per / step);
   const slow = [r() * 6.283, r() * 6.283, 2 + r() * 3, 5 + r() * 4];
   const knots = Array.from({ length: Math.ceil(per / 26) + 2 }, () => r() * 2 - 1);
   const bites = Array.from({ length: 3 + Math.floor(r() * 3) }, () => ({ at: r() * per, width: 18 + r() * 34, depth: 4 + r() * 8 }));
@@ -130,15 +131,18 @@ function tornEdgeMask() {
     else if (s < 2 * w + h) { px = x + w - (s - w - h); py = y + h; nx = 0; ny = 1; toCorner = Math.min(s - w - h, 2 * w + h - s); }
     else { px = x; py = y + h - (s - 2 * w - h); nx = -1; ny = 0; toCorner = Math.min(s - 2 * w - h, per - s); }
     const k = s / 26, k0 = Math.floor(k), u = k - k0, e = (1 - Math.cos(u * Math.PI)) / 2;
-    let off = 5 * Math.sin((s / per) * Math.PI * 2 * slow[2] + slow[0]) + 2.5 * Math.sin((s / per) * Math.PI * 2 * slow[3] + slow[1])
-      + 2.2 * (knots[k0] + (knots[k0 + 1] - knots[k0]) * e) + (r() - 0.5) * 1.6;
-    for (const b of bites) { const d = Math.abs(s - b.at); if (d < b.width / 2) off -= b.depth * Math.cos((d / b.width) * Math.PI); }
+    let off = size * (5 * Math.sin((s / per) * Math.PI * 2 * slow[2] + slow[0]) + 2.5 * Math.sin((s / per) * Math.PI * 2 * slow[3] + slow[1])
+      + 2.2 * (knots[k0] + (knots[k0 + 1] - knots[k0]) * e) + (r() - 0.5) * 1.6);
+    for (const b of bites) { const d = Math.abs(s - b.at); if (d < b.width * size / 2) off -= size * b.depth * Math.cos((d / (b.width * size)) * Math.PI); }
     const ci = Math.min(3, Math.floor(s / (per / 4)));
     if (toCorner < corner[ci]) off -= (corner[ci] - toCorner) * 0.55; // corners clipped, never square
     pts.push(`${f1(px + nx * off)},${f1(py + ny * off)}`);
   }
-  const svgText = `<svg xmlns='http://www.w3.org/2000/svg' width='${W}' height='${H}' viewBox='0 0 ${W} ${H}'><filter id='f' x='-5%' y='-5%' width='110%' height='110%'><feGaussianBlur stdDeviation='7'/></filter><polygon points='${pts.join(" ")}' fill='white' filter='url(#f)'/></svg>`;
-  const url = `url("data:image/svg+xml,${encodeURIComponent(svgText)}")`;
+  const svgText = `<svg xmlns='http://www.w3.org/2000/svg' width='${W}' height='${H}' viewBox='0 0 ${W} ${H}'><filter id='f' x='-5%' y='-5%' width='110%' height='110%'><feGaussianBlur stdDeviation='${blur}'/></filter><polygon points='${pts.join(" ")}' fill='white' filter='url(#f)'/></svg>`;
+  return `url("data:image/svg+xml,${encodeURIComponent(svgText)}")`;
+}
+function tornEdgeMask() {
+  const W = window.innerWidth, H = window.innerHeight, url = tornMaskUrl(W, H, photo, tornSeed);
   for (const el of [canvas, $("ink")]) {
     el.style.webkitMaskImage = el.style.maskImage = url;
     el.style.webkitMaskSize = el.style.maskSize = "100% 100%";
@@ -249,7 +253,7 @@ window.addEventListener("resize", () => {
 
 // ---------- page state ----------
 let splat = null;
-let page = { key: "", title: "", flipped: true, notes: [], doodles: [] };
+let page = null;      // the open page's record (see store.ts); null while on the scrapbook
 let tool = null;     // null | "note" | "draw"
 let editing = null;  // { note } for existing, { point } for new
 let inkDirty = true;
@@ -257,9 +261,22 @@ let inkDirty = true;
 const setStatus = (msg) => { $("status").textContent = msg; $("status").style.opacity = msg ? 1 : 0; };
 const today = () => { const d = new Date(); return `${d.getDate()}. ${["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"][d.getMonth()]} ${d.getFullYear()}`; };
 
-function store(key, value) { try { localStorage.setItem("sj:" + key, JSON.stringify(value)); } catch (e) { /* storage can be unavailable; the page still works for this visit */ } }
-function restore(key) { try { return JSON.parse(localStorage.getItem("sj:" + key)); } catch (e) { return null; } }
-const save = () => store(page.key, page);
+// what goes into storage: plain data only (notes and doodles also carry DOM elements while on screen)
+const recordOf = (pg) => ({
+  ...pg,
+  notes: pg.notes.map(({ id, p, text, strokes, style, scale }) => ({ id, p, text, strokes, style, scale: scale ?? 1 })),
+  doodles: pg.doodles.map(({ pts, d }) => ({ pts, d })),
+});
+let saveTimer = 0;
+// saves are gathered for a moment, since typing a title or drawing would otherwise write on every change
+function save(now = false) {
+  if (!page) return;
+  const pg = page;
+  clearTimeout(saveTimer);
+  const write = () => savePage(recordOf(pg)).catch((err) => console.warn("could not save the page", err));
+  if (now) write(); else saveTimer = window.setTimeout(write, 300);
+}
+const pad2 = (n) => String(n).padStart(2, "0");
 
 // ---------- haze: far splats fade toward the colour of the paper, inside Spark's own shader ----------
 let viewDist = 2;
@@ -285,29 +302,43 @@ function paperHaze(mesh, d) {
   }
 }
 
-// ---------- loading a scan (= a page) ----------
-async function loadPage(source) {
+// ---------- loading a page ----------
+let loadToken = 0;
+async function loadPage(id, direction = 0) {
   if (disposed) return;
+  const token = ++loadToken;
   setStatus("loading");
+  showHome(false);
+  const stored = await getPage(id);
+  if (disposed || token !== loadToken) return;
+  if (!stored) { setStatus("that page could not be found"); return; }
+  save(true); // anything pending on the page being left
   if (splat) { scene.remove(splat); splat.dispose?.(); splat = null; }
 
-  page = restore(source.key) || { key: source.key, title: source.title || "", flipped: source.flipped ?? true, notes: [], doodles: [] };
-  page.date ||= today();
+  const { scanBytes, ...rec } = stored;
+  page = rec;
   page.notes ||= [];
   page.notes.forEach(normalizeNoteStyle);
   page.doodles ||= [];
+  lastPageId = page.id;
   $("pageDate").textContent = page.date;
+  $("seal").textContent = pad2(page.number);
   letterTitle();
   $("notes").innerHTML = "";
   $("ink").innerHTML = "";
+  if (direction && !reducedMotion()) {
+    // turning a page: the seal is stamped again, the new print fades up from the turning side
+    $("seal").animate([{ opacity: 0, scale: 1.25 }, { opacity: 1, scale: 1 }], { duration: 320, easing: "cubic-bezier(.3,.7,.3,1)" });
+    canvas.animate([{ opacity: 0, translate: `${direction * 24}px 0` }, { opacity: 1, translate: "0 0" }], { duration: 520, easing: "ease-out" });
+  }
 
-  const nextSplat = new SplatMesh({ fileBytes: source.fileBytes, fileName: source.label });
+  const nextSplat = new SplatMesh({ fileBytes: scanBytes, fileName: page.label || "scan.ply" });
   splat = nextSplat;
   applyFlip();
   scene.add(nextSplat);
 
-  camera.position.fromArray(source.start || [0, 0, 3]);
-  controls.target.fromArray(source.target || [0, 0, 0]);
+  camera.position.fromArray(page.start || [0, 0, 3]);
+  controls.target.fromArray(page.target || [0, 0, 0]);
   camera.lookAt(controls.target);
   // the distance you first see the place from: bubbles are life-size there, and the haze is measured from it
   viewDist = Math.max(0.2, camera.position.distanceTo(controls.target));
@@ -321,6 +352,7 @@ async function loadPage(source) {
     setStatus("");
     page.notes.forEach((n) => makeNoteEl(n));
     inkDirty = true;
+    if (!page.cover) wantCover(1500); // its first look becomes its cover
   } catch (err) {
     if (disposed || splat !== nextSplat) return;
     console.error(err);
@@ -330,21 +362,30 @@ async function loadPage(source) {
 
 function applyFlip() {
   // most phone captures come out upside-down in three.js (camera convention), so scans default to flipped
-  if (splat) splat.rotation.set(page.flipped ? Math.PI : 0, 0, 0);
+  if (splat && page) splat.rotation.set(page.flipped ? Math.PI : 0, 0, 0);
   inkDirty = true;
 }
 
-$("openBtn").onclick = () => $("fileInput").click();
+// "open" begins a new page from the chosen scan (notes from the old journal come along if it was the same file)
+const openScan = () => $("fileInput").click();
+$("openBtn").onclick = openScan;
+$("homeOpenBtn").onclick = openScan;
 $("fileInput").onchange = async (e) => {
   const file = e.target.files?.[0];
-  if (!file) return;
-  const bytes = new Uint8Array(await file.arrayBuffer());
-  loadPage({ fileBytes: bytes, key: "file:" + file.name + ":" + file.size, label: file.name });
   e.target.value = "";
+  if (!file) return;
+  setStatus("loading");
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  const old = takeLegacy("file:" + file.name + ":" + file.size);
+  const rec = await createPage({
+    scanBytes: bytes, label: file.name, title: old?.title || "", date: old?.date || today(),
+    flipped: old?.flipped ?? true, notes: old?.notes || [], doodles: old?.doodles || [],
+  });
+  loadPage(rec.id);
 };
-$("flipBtn").onclick = () => { page.flipped = !page.flipped; applyFlip(); save(); };
-$("title").addEventListener("input", () => { page.title = $("title").textContent.trim(); save(); }, { signal: lifecycle.signal });
-$("title").addEventListener("focus", () => { $("title").textContent = page.title; }, { signal: lifecycle.signal });
+$("flipBtn").onclick = () => { if (!page) return; page.flipped = !page.flipped; applyFlip(); save(); wantCover(900); };
+$("title").addEventListener("input", () => { if (page) { page.title = $("title").textContent.trim(); save(); } }, { signal: lifecycle.signal });
+$("title").addEventListener("focus", () => { $("title").textContent = page?.title || ""; }, { signal: lifecycle.signal });
 $("title").addEventListener("blur", letterTitle, { signal: lifecycle.signal });
 $("title").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); e.target.blur(); } }, { signal: lifecycle.signal });
 
@@ -374,7 +415,7 @@ const rayAt = (x, y) => { raycaster.setFromCamera(new THREE.Vector2((x / window.
 
 // note tool: tap (not drag) to pin
 let down = null;
-canvas.addEventListener("pointerdown", (e) => { down = { x: e.clientX, y: e.clientY, t: performance.now() }; }, { signal: lifecycle.signal });
+canvas.addEventListener("pointerdown", (e) => { down = notePinch ? null : { x: e.clientX, y: e.clientY, t: performance.now() }; }, { signal: lifecycle.signal });
 canvas.addEventListener("pointerup", (e) => {
   if (!down || tool !== "note" || !splat) return;
   const moved = Math.hypot(e.clientX - down.x, e.clientY - down.y);
@@ -503,6 +544,8 @@ function openEditor(target) {
   padStrokes = n?.strokes ? n.strokes.map((s) => s.slice()) : [];
   padCur = null;
   $("tearBtn").style.visibility = n ? "visible" : "hidden";
+  editScale = n?.scale ?? 1;
+  stepEditScale(1);
   $("editor").classList.add("open");
   redrawPad();
   setTab(n?.strokes?.length ? "draw" : editMode);
@@ -510,6 +553,8 @@ function openEditor(target) {
   lines.get("slip")?.drawOn(0, 460);
 }
 function closeEditor() {
+  if (!$("editor").classList.contains("open")) return;
+  if (editing?.note) editing.note.liveScale = null; // a size tried in the editor but not saved goes back
   const returnFocus = editing?.note?.el?.isConnected ? editing.note.el.querySelector(".card") : $("noteBtn");
   $("editor").classList.remove("open"); $("noteText").blur(); editing = null;
   requestAnimationFrame(() => returnFocus?.focus());
@@ -527,12 +572,13 @@ $("saveBtn").onclick = () => {
   if (editMode === "draw" ? !padStrokes.length : !text) { closeEditor(); return; }
   if (editing.note) {
     const styleChanged = editing.note.style !== noteStyle;
-    Object.assign(editing.note, content, { style: noteStyle });
+    Object.assign(editing.note, content, { style: noteStyle, scale: editScale });
     drawNote(editing.note, styleChanged);
   } else {
-    const note = { id: Date.now().toString(36), p: editing.point, style: noteStyle, ...content };
+    const note = { id: Date.now().toString(36), p: editing.point, style: noteStyle, scale: editScale, ...content };
     page.notes.push(note);
     makeNoteEl(note, true);
+    wantCover(1400); // once it has been sketched in
   }
   save(); closeEditor();
 };
@@ -560,7 +606,10 @@ function makeNoteEl(note, fresh = false) {
   const card = el.querySelector(".card");
   card.setAttribute("role", "button");
   card.setAttribute("tabindex", "0");
-  card.onclick = () => openEditor({ note });
+  card.onclick = () => { if (performance.now() > suppressClick) openEditor({ note }); };
+  // pinching a note resizes it (instead of gliding); scrolling over it does the same on a desktop
+  card.addEventListener("pointerdown", (e) => { if (e.pointerType === "touch" && notePointerDown(note, e)) { try { card.setPointerCapture(e.pointerId); } catch (err) { /* fine without capture */ } } });
+  card.addEventListener("wheel", (e) => noteWheel(note, e), { passive: false });
   card.onkeydown = (e) => {
     if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openEditor({ note }); }
   };
@@ -597,7 +646,7 @@ function drawNote(note, sketch = false) {
   Object.defineProperty(el, "_pens", { value: pens, configurable: true, writable: true });
   const trail = el.querySelector(".trail");
   trail.innerHTML = "";
-  el._trailLine = null; el._dots = []; el._trailKey = "";
+  el._trailLine = null; el._outline = null; el._dots = []; el._trailKey = "";
   if (note.style === "line") {
     el._trailLine = new PenLine(trail, { width: 1.1, taper: 6, step: 2, wobble: 0.7 });
     pens.push(el._trailLine);
@@ -637,6 +686,7 @@ function drawNote(note, sketch = false) {
     body.appendChild(svgEl("path", { class: "soap-glint", d: openCurve(glint) }));
     bub.append(defs, body);
     outline = new PenLine(bub, { width: 1.15, taper: 9, step: 2.5 }).set([loop]);
+    el._outline = outline;
     pens.push(outline);
   }
 
@@ -681,7 +731,10 @@ function placeNote(n) {
   worldB.y += (n.style === "line" ? 0.5 : 1) * rise + sway * 1.3 * Math.sin((t / air.ty) * 6.283 + air.py);
   worldB.x += sway * Math.sin((t / air.tx) * 6.283 + air.px);
   worldB.z += sway * 0.8 * Math.sin((t / air.tz) * 6.283 + air.pz);
-  const dist = worldB.distanceTo(camera.position), s = lifeSize(dist);
+  // the note's own size (0.5–2, eased toward while it changes) on top of its perspective size
+  const want = n.liveScale ?? n.scale ?? 1;
+  air.k = air.k == null ? want : air.k + (want - air.k) * scaleEase;
+  const dist = worldB.distanceTo(camera.position), s = lifeSize(dist) * air.k;
   let [bx, by] = toScreen(worldB);
   bx -= ax; by -= ay;
 
@@ -726,8 +779,10 @@ function placeNote(n) {
     }
   }
 }
+let scaleEase = 1;
 function placeNotes(dt) {
   if (!splat) return;
+  scaleEase = 1 - Math.exp(-dt * 14);
   if (!reducedMotion()) airTime += dt;
   splat.updateMatrixWorld();
   for (const n of page.notes) if (n.el) placeNote(n);
@@ -774,6 +829,8 @@ function pinchState() {
   return { d: Math.hypot(a.x - b.x, a.y - b.y), cx: (a.x + b.x) / 2, cy: (a.y + b.y) / 2 };
 }
 canvas.addEventListener("pointerdown", (e) => {
+  if (notePinch && notePinch.ids.size === 1 && e.pointerType === "touch") { notePointerDown(notePinch.note, e); return; }
+  if (tool !== "draw" && pointers.size === 0 && onPaper(e.clientX, e.clientY)) { swipe = { id: e.pointerId, x: e.clientX, y: e.clientY, t: performance.now() }; return; }
   pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
   try { canvas.setPointerCapture(e.pointerId); } catch (err) { /* fine without capture */ }
   pinchPrev = pointers.size === 2 ? pinchState() : null;
@@ -799,6 +856,12 @@ canvas.addEventListener("pointermove", (e) => {
   }
 }, { signal: lifecycle.signal });
 const endPointer = (e) => {
+  if (swipe && e.pointerId === swipe.id) {
+    const dx = e.clientX - swipe.x, dy = e.clientY - swipe.y, quick = performance.now() - swipe.t < 700;
+    swipe = null;
+    if (e.type === "pointerup" && quick && Math.abs(dx) > 60 && Math.abs(dy) < Math.abs(dx) * 0.6) turnPage(dx < 0 ? 1 : -1);
+    return;
+  }
   if (drawing && e.pointerId === drawing.id) endStroke(e.type === "pointerup");
   pointers.delete(e.pointerId); pinchPrev = null;
 };
@@ -815,6 +878,7 @@ window.addEventListener("keydown", (e) => {
   if ($("editor").classList.contains("open") && e.key === "Escape") { closeEditor(); return; }
   if (typing() || e.metaKey || e.ctrlKey) return;
   const k = e.key.toLowerCase();
+  if (!homeOpen && (k === "arrowleft" || k === "arrowright")) { e.preventDefault(); if (!e.repeat) turnPage(k === "arrowright" ? 1 : -1); return; }
   keys.add(k);
   if (floatMode && (k === " " || k.startsWith("arrow"))) e.preventDefault();
 }, { signal: lifecycle.signal });
@@ -845,7 +909,7 @@ function updateFloat(dt) {
   const has = (...ks) => ks.some((k) => keys.has(k)) ? 1 : 0;
   const speed = keys.has("shift") ? 4.5 : 1.6;
   want.set(
-    has("d", "arrowright") - has("a", "arrowleft") + joy.x,
+    has("d") - has("a") + joy.x,
     has("e", " ") - has("q"),
     has("w", "arrowup") - has("s", "arrowdown") - joy.y
   ).multiplyScalar(speed);
@@ -856,6 +920,159 @@ function updateFloat(dt) {
   glide.multiplyScalar(1 - k);
   camera.translateX(mx); camera.translateY(my); camera.translateZ(-mz);
 }
+
+// ---------- the scrapbook: every page as a torn print, its seal, title and date ----------
+let homeOpen = false, lastPageId = null, coverUrls = [];
+function showHome(on) {
+  homeOpen = on;
+  $("home").classList.toggle("open", on);
+  document.body.classList.toggle("at-home", on);
+  if (on) { save(true); closeEditor(); setTool(null); }
+}
+async function openHome() {
+  showHome(true);
+  await renderCovers();
+  drawMarks();
+}
+async function renderCovers() {
+  const pages = await listPages();
+  coverUrls.forEach((u) => URL.revokeObjectURL(u));
+  coverUrls = [];
+  const list = $("covers");
+  list.innerHTML = "";
+  $("homeEmpty").style.display = pages.length ? "none" : "";
+  pages.forEach((pg, i) => {
+    const li = document.createElement("li");
+    li.className = "cover";
+    li.innerHTML = '<button class="cover-open" type="button"><span class="cover-print"><img alt="" /></span><span class="seal"></span></button><span class="cover-title"></span><span class="cover-date"></span><span class="cover-delete"><button class="del" type="button">delete page</button><span class="ask" hidden>delete page <b></b>? <button class="yes" type="button">yes</button><button class="no" type="button">no</button></span></span>';
+    const num = pad2(pg.number), open = li.querySelector(".cover-open");
+    li.querySelector(".seal").textContent = num;
+    li.querySelector(".cover-title").textContent = pg.title || "untitled place";
+    li.querySelector(".cover-date").textContent = pg.date;
+    li.querySelector(".ask b").textContent = num;
+    open.setAttribute("aria-label", `Open page ${num}: ${pg.title || "untitled place"}`);
+    open.onclick = () => loadPage(pg.id);
+    const img = li.querySelector("img"), print = li.querySelector(".cover-print");
+    if (pg.cover) {
+      const url = URL.createObjectURL(pg.cover);
+      coverUrls.push(url);
+      img.src = url;
+    } else print.classList.add("unseen");
+    // each print gets its own torn edge, the same every time for that page
+    const tear = () => {
+      const w = print.offsetWidth, h = print.offsetHeight;
+      if (!w) return;
+      const url = tornMaskUrl(w, h, { x: 6, y: 6, w: w - 12, h: h - 12 }, hash(pg.id), 3.5);
+      print.style.webkitMaskImage = print.style.maskImage = url;
+      print.style.webkitMaskSize = print.style.maskSize = "100% 100%";
+    };
+    img.onload = tear;
+    // deleting asks first, in the margin
+    const del = li.querySelector(".del"), ask = li.querySelector(".ask");
+    del.onclick = () => { del.hidden = true; ask.hidden = false; ask.querySelector(".no").focus(); };
+    ask.querySelector(".no").onclick = () => { ask.hidden = true; del.hidden = false; del.focus(); };
+    ask.querySelector(".yes").onclick = async () => {
+      await deletePage(pg.id);
+      if (lastPageId === pg.id) { lastPageId = null; page = null; if (splat) { scene.remove(splat); splat.dispose?.(); splat = null; } }
+      renderCovers();
+    };
+    list.appendChild(li);
+    requestAnimationFrame(tear);
+    if (!reducedMotion()) li.animate([{ opacity: 0, translate: "0 6px" }, { opacity: 1, translate: "0 0" }], { duration: 380, delay: 60 * i, easing: "ease-out", fill: "backwards" });
+  });
+}
+$("homeBtn").onclick = openHome;
+
+// ---------- turning pages: swipe across the paper margin, or the left and right arrow keys ----------
+async function turnPage(dir) {
+  if (!page || homeOpen) return;
+  const pages = await listPages(), i = pages.findIndex((p) => p.id === page.id), next = pages[i + dir];
+  if (next) loadPage(next.id, dir);
+  else flashHint(dir > 0 ? "this is the last page" : "this is the first page");
+}
+const onPaper = (x, y) => x < photo.x || x > photo.x + photo.w || y < photo.y || y > photo.y + photo.h;
+let swipe = null;
+
+// ---------- covers: a small JPEG of the print, taken in the page ----------
+let coverAt = 0;
+function wantCover(delay) { coverAt = performance.now() + delay; }
+function captureCover() {
+  if (!page || !splat || !photo.w) return;
+  const pg = page, k = canvas.width / window.innerWidth;
+  const tw = 360, th = Math.round(tw * photo.h / photo.w);
+  const c = document.createElement("canvas");
+  c.width = tw; c.height = th;
+  const ctx = c.getContext("2d");
+  ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue("--paper").trim() || "#f6f2ea";
+  ctx.fillRect(0, 0, tw, th);
+  ctx.filter = getComputedStyle(canvas).filter; // the same faded print as on the page
+  ctx.drawImage(canvas, photo.x * k, photo.y * k, photo.w * k, photo.h * k, 0, 0, tw, th);
+  c.toBlob((blob) => { if (blob && pg === page) { pg.cover = blob; save(true); } }, "image/jpeg", 0.8);
+}
+
+// ---------- resizing a note: pinch it, scroll over it, or "smaller"/"larger" in the editor ----------
+const SCALE_MIN = 0.5, SCALE_MAX = 2;
+const clampScale = (k) => Math.min(SCALE_MAX, Math.max(SCALE_MIN, k));
+// past the limits it gives a little, like stretching paper, and springs back when you let go
+const rubber = (k) => (k > SCALE_MAX ? SCALE_MAX + (k - SCALE_MAX) * 0.3 : k < SCALE_MIN ? SCALE_MIN - (SCALE_MIN - k) * 0.3 : k);
+function showResizing(note) {
+  const el = note.el, now = performance.now();
+  if (now - (el._resizeShown || 0) < 700) return; // once per gesture, not on every step
+  el._resizeShown = now;
+  (el._outline || el._trailLine)?.drawOn(0, 380);
+}
+function setNoteScale(note, k, { live = false } = {}) {
+  note.liveScale = live ? rubber(k) : null;
+  if (!live) note.scale = clampScale(k);
+  showResizing(note);
+}
+let notePinch = null; // { note, ids: Map<id,{x,y}>, d0, k0 }
+let suppressClick = 0;
+function pinchDistance(ids) { const [a, b] = [...ids.values()]; return Math.hypot(a.x - b.x, a.y - b.y); }
+function notePointerDown(note, e) {
+  if (notePinch && notePinch.note !== note) return false;
+  notePinch ||= { note, ids: new Map(), d0: 0, k0: 1 };
+  notePinch.ids.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  if (notePinch.ids.size === 2) { notePinch.d0 = pinchDistance(notePinch.ids) || 1; notePinch.k0 = note.scale ?? 1; showResizing(note); }
+  return true;
+}
+window.addEventListener("pointermove", (e) => {
+  const p = notePinch?.ids.get(e.pointerId);
+  if (!p) return;
+  p.x = e.clientX; p.y = e.clientY;
+  if (notePinch.ids.size === 2) setNoteScale(notePinch.note, notePinch.k0 * pinchDistance(notePinch.ids) / notePinch.d0, { live: true });
+}, { signal: lifecycle.signal });
+const notePointerUp = (e) => {
+  if (!notePinch?.ids.has(e.pointerId)) return;
+  if (notePinch.ids.size === 2) { // the pinch ends: settle inside the limits and keep it
+    const n = notePinch.note;
+    setNoteScale(n, n.liveScale ?? n.scale ?? 1);
+    save(); suppressClick = performance.now() + 400;
+  }
+  notePinch.ids.delete(e.pointerId);
+  if (!notePinch.ids.size) notePinch = null;
+};
+window.addEventListener("pointerup", notePointerUp, { signal: lifecycle.signal });
+window.addEventListener("pointercancel", notePointerUp, { signal: lifecycle.signal });
+const wheelSettle = new WeakMap();
+function noteWheel(note, e) {
+  e.preventDefault();
+  const k = (note.liveScale ?? note.scale ?? 1) * Math.exp(-Math.max(-60, Math.min(60, e.deltaY)) * 0.004);
+  setNoteScale(note, k, { live: true });
+  clearTimeout(wheelSettle.get(note));
+  wheelSettle.set(note, setTimeout(() => { setNoteScale(note, note.liveScale ?? note.scale); save(); }, 220));
+}
+// the editor's two words step the size by 15%; it is kept when you save, undone if you cancel
+let editScale = 1;
+function stepEditScale(f) {
+  editScale = clampScale(editScale * f);
+  const n = editing?.note;
+  if (n) { n.liveScale = editScale; showResizing(n); }
+  $("smallerBtn").disabled = editScale <= SCALE_MIN + 1e-3;
+  $("largerBtn").disabled = editScale >= SCALE_MAX - 1e-3;
+}
+$("smallerBtn").onclick = () => stepEditScale(1 / 1.15);
+$("largerBtn").onclick = () => stepEditScale(1.15);
 
 // ---------- start ----------
 setFloat(true);
@@ -869,12 +1086,13 @@ $("title").addEventListener("focus", () => {
   const t = $("title"), sel = window.getSelection(), r = document.createRange();
   r.selectNodeContents(t); r.collapse(false); sel?.removeAllRanges(); sel?.addRange(r);
 }, { signal: lifecycle.signal });
-document.fonts?.ready.then(() => { if (disposed) return; drawChrome(); page.notes.forEach((n) => n.el && drawNote(n)); }); // lettering changes sizes once the pen font arrives
+document.fonts?.ready.then(() => { if (disposed) return; drawChrome(); page?.notes.forEach((n) => n.el && drawNote(n)); }); // lettering changes sizes once the pen font arrives
 
 const clock = new THREE.Clock();
 let breath = 0;
 renderer.setAnimationLoop(() => {
   const dt = Math.min(clock.getDelta(), 0.1);
+  if (homeOpen || !page) return; // the scene rests while the scrapbook is open
   if (floatMode) updateFloat(dt); else controls.update();
   // the whole scan breathes: about 1% in and out over 8 s (still under reduced motion)
   breath += dt;
@@ -882,11 +1100,28 @@ renderer.setAnimationLoop(() => {
   if (camera.zoom !== zoom) { camera.zoom = zoom; camera.updateProjectionMatrix(); }
   camera.updateMatrixWorld();
   renderer.render(scene, camera);
+  if (coverAt && performance.now() >= coverAt && splat && !$("status").textContent) { coverAt = 0; captureCover(); }
   placeNotes(dt);
   renderInk();
 });
 
-loadPage(SAMPLE());
+// the first visit (an empty journal) begins with the sample table as page 01
+showHome(true); // the journal opens on the scrapbook, while its pages are read
+setStatus("");
+(async () => {
+  let pages = await listPages();
+  if (disposed) return; // (in development React mounts twice; only the living instance may create the sample)
+  if (!pages.length) {
+    const sample = SAMPLE(), old = takeLegacy(sample.key);
+    await createPage({
+      scanBytes: sample.fileBytes, label: sample.label, title: old?.title || sample.title, date: old?.date || today(),
+      flipped: old?.flipped ?? sample.flipped, notes: old?.notes || [], doodles: old?.doodles || [], start: sample.start, target: sample.target,
+    });
+    pages = await listPages();
+  }
+  if (disposed) return;
+  openHome();
+})();
 
 return () => {
   disposed = true;

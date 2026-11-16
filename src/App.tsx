@@ -50,6 +50,7 @@ export default function App() {
 
         {/* tools are words in the margins of the page */}
         <div className="margin top-left" aria-label="Memory actions">
+          <button id="homeBtn" className="mark" type="button" aria-label="Back to all pages">pages</button>
           <button id="openBtn" className="mark" type="button" aria-label="Open a 3D scan">open</button>
           <button id="flipBtn" className="mark" type="button" aria-label="Flip scan orientation">flip</button>
         </div>
@@ -76,8 +77,17 @@ export default function App() {
             <svg id="titleLine" aria-hidden="true" />
             <span id="pageDate" />
           </div>
-          <span id="seal" aria-hidden="true"><span>01</span></span>
+          <span id="seal" className="seal" aria-label="Page number">01</span>
         </footer>
+        {/* the scrapbook: every page as a torn print with its seal, title and date */}
+        <section id="home" aria-label="All pages">
+          <div className="margin top-left">
+            <button id="homeOpenBtn" className="mark" type="button" aria-label="Open a 3D scan as a new page">open</button>
+          </div>
+          <ol id="covers" />
+          <p id="homeEmpty">no pages yet. open a scan to begin one.</p>
+        </section>
+
         <input type="file" id="fileInput" accept=".spz,.ply,.splat,.ksplat,.sog" />
 
         <div id="editor" role="dialog" aria-modal="true" aria-label="Memory note editor">
@@ -109,6 +119,8 @@ export default function App() {
               <button id="tearBtn" type="button">remove</button>
               <div>
                 <button id="padUndo" type="button" aria-label="Undo handwriting stroke">undo</button>
+                <button id="smallerBtn" type="button" aria-label="Make the note smaller">smaller</button>
+                <button id="largerBtn" type="button" aria-label="Make the note larger">larger</button>
                 <button id="cancelBtn" type="button">cancel</button>
                 <button id="saveBtn" className="mark" type="button">save</button>
               </div>

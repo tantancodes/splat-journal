@@ -33,6 +33,13 @@
   --margin-track: 0.22em;
   --title-size: 21px;
   --title-max: min(44vw, 340px);
+
+  /* the scrapbook */
+  --cover-w: 520px;
+  --cover-print: min(100%, 420px);
+  --cover-aspect: 4 / 3;
+  --cover-gap: 46px;
+  --unseen: color-mix(in srgb, var(--pencil) 13%, transparent);
   --note-size: 19px;
 
   /* touch and motion */
@@ -141,6 +148,7 @@ svg { overflow: visible; }
   text-align: center;
   text-transform: lowercase;
   text-shadow: 0 0 6px var(--soap);
+  touch-action: none; /* a pinch on a note resizes it */
 }
 .bub { position: absolute; left: 0; top: 0; z-index: -1; }
 /* a soap bubble: a barely-there body, brighter where the light catches it; the ink outline is what you read */
@@ -215,7 +223,7 @@ button.mark { display: inline-grid; place-items: center; padding: 0 calc(10px - 
 #title:empty::before { content: "untitled place"; color: var(--pencil); }
 #titleLine { position: absolute; left: 0; top: 0; width: 1px; height: 1px; pointer-events: none; }
 #pageDate { margin-top: 8px; padding-left: 1px; color: var(--pencil); white-space: nowrap; }
-#seal {
+.seal {
   flex: none;
   display: inline-grid;
   place-items: center;
@@ -285,6 +293,40 @@ button.mark { display: inline-grid; place-items: center; padding: 0 calc(10px - 
 #knobRing { width: 36px; height: 36px; }
 #knobRing .penline { color: var(--ink-soft); }
 
+/* ---------- the scrapbook: torn prints down the page, each with its seal and two pencilled lines ---------- */
+#home {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  display: none;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  background: var(--fibre) 0 0 / var(--fibre-size) repeat, var(--paper);
+  padding: calc(var(--safe-top) + 76px) var(--mx) calc(var(--safe-bottom) + 64px);
+}
+#home.open { display: block; }
+#home .margin.top-left { position: fixed; }
+#covers { list-style: none; margin: 0 auto; padding: 0; width: min(100%, var(--cover-w)); display: flex; flex-direction: column; gap: var(--cover-gap); }
+.cover { position: relative; display: flex; flex-direction: column; align-items: flex-start; }
+.cover:nth-child(even) { align-self: flex-end; } /* pasted in a little unevenly, as by hand */
+.cover-open { position: relative; display: block; width: var(--cover-print); padding: 0; text-align: left; }
+.cover-print { display: block; aspect-ratio: var(--cover-aspect); rotate: var(--cover-tilt, -0.6deg); }
+.cover:nth-child(3n + 2) .cover-print { --cover-tilt: 0.8deg; }
+.cover:nth-child(3n) .cover-print { --cover-tilt: -0.2deg; }
+.cover-print img { display: block; width: 100%; height: 100%; object-fit: cover; }
+/* a page not yet looked at: a blank, pencil-toned sheet that says so */
+.cover-print.unseen { display: grid; place-items: center; background: var(--unseen); }
+.cover-print.unseen img { display: none; }
+.cover-print.unseen::after { content: "not yet opened"; color: var(--pencil); }
+.cover .seal { position: absolute; left: -6px; top: -7px; }
+.cover-title { margin-top: 12px; color: var(--ink); }
+.cover-date { color: var(--pencil); }
+.cover-delete { margin: 2px 0 0 -10px; color: var(--pencil); }
+.cover-delete button { min-height: var(--tap); padding: 0 10px; color: var(--pencil); }
+.cover-delete .yes { color: var(--ink); }
+.cover-delete b { font-weight: inherit; color: var(--ink); }
+#homeEmpty { display: none; margin: 30vh auto 0; color: var(--pencil); text-align: center; }
+
 /* ---------- note editor: a loose sheet laid on the page ---------- */
 #editor {
   position: fixed;
@@ -343,7 +385,9 @@ button.mark { display: inline-grid; place-items: center; padding: 0 calc(10px - 
 .draw #noteText, .draw .chips { display: none; }
 #padGhost { fill: var(--pencil); font: var(--margin-weight) 10px var(--margin); letter-spacing: var(--margin-track); }
 .actions { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin: 0 -10px; }
-.actions > div { display: flex; align-items: center; gap: 2px; }
+.actions > div { display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; gap: 0 2px; }
+#smallerBtn, #largerBtn { color: var(--pencil); }
+.actions button:disabled { color: var(--pencil-faint); cursor: default; }
 .actions button { padding: 0 10px; }
 #tearBtn, #cancelBtn, #padUndo { color: var(--pencil); }
 #padUndo { display: none; }
@@ -364,7 +408,11 @@ input[type="file"] { display: none; }
     --colophon-bottom: calc(var(--safe-bottom) + 62px);
     --title-size: 20px;
     --title-max: 62vw;
+    --cover-print: 84%;
+    --cover-aspect: 3 / 4;
+    --cover-gap: 40px;
   }
+  #hint { max-width: 40vw; }
   #help { display: none; }
   #undoBtn { position: absolute; right: 0; bottom: calc(100% + 2px); }
   #editor { align-items: flex-end; padding: 10px 10px max(8px, var(--safe-bottom)); }
@@ -382,7 +430,11 @@ input[type="file"] { display: none; }
     --colophon-bottom: calc(var(--safe-bottom) + 7px);
     --title-size: 17px;
     --title-max: 30vw;
+    --cover-w: 440px;
+    --cover-print: 70%;
+    --cover-aspect: 16 / 7;
   }
+  #home { padding-top: calc(var(--safe-top) + 52px); }
   #pageDate { margin-top: 4px; }
   #help { display: none; }
   #editor { padding-top: max(8px, var(--safe-top)); padding-bottom: max(8px, var(--safe-bottom)); }
