@@ -110,7 +110,26 @@ export default function App() {
           <div className="slip" id="slip">
             <svg className="box" aria-hidden="true"><path className="pen" id="slipPath" /></svg>
             <div className="editor-kicker">a note from this place</div>
-            <div className="tabs" role="tablist" aria-label="Note style">
+            <div className="style-pickers" role="group" aria-label="Floating note style">
+              <button id="styleThought" className="style-picker on" type="button" aria-pressed="true">
+                <svg className="style-icon" viewBox="0 0 28 22" aria-hidden="true">
+                  <path d="M8.5 3.5c1.4-1 3.1-1.5 5.4-1.5 4.3 0 7.2 2.3 7.2 5.4s-2.9 5.4-7.2 5.4h-1.5" />
+                  <circle cx="8.5" cy="15.8" r="1.2" />
+                  <circle cx="6.1" cy="18.5" r="1.6" />
+                  <circle cx="3.2" cy="20" r="1.8" />
+                </svg>
+                <span>thought</span>
+              </button>
+              <button id="styleLine" className="style-picker" type="button" aria-pressed="false">
+                <svg className="style-icon" viewBox="0 0 28 22" aria-hidden="true">
+                  <circle cx="3.5" cy="17" r="1.7" />
+                  <path d="M5.5 16c5.2-.5 4.2-9.2 10-9.2h8" />
+                  <path d="M16.5 17h7" />
+                </svg>
+                <span>line</span>
+              </button>
+            </div>
+            <div className="tabs" role="tablist" aria-label="Note content">
               <button id="tabWrite" className="on" type="button" role="tab" aria-selected="true">type</button>
               <button id="tabDraw" type="button" role="tab" aria-selected="false">handwrite</button>
             </div>

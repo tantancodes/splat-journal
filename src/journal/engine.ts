@@ -8,9 +8,10 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { SparkRenderer, SplatMesh } from "@sparkjsdev/spark";
+import { normalizeNoteStyle } from "./note-style.js";
 
 type Vec3 = [number, number, number];
-interface Note { id: string; p: Vec3; text: string; strokes: number[][][] | null; el?: HTMLElement }
+interface Note { id: string; p: Vec3; text: string; strokes: number[][][] | null; style?: "thought" | "line"; el?: HTMLElement }
 interface Doodle { pts: Vec3[]; d: number; el?: SVGPathElement }
 interface Page { key: string; title: string; flipped: boolean; notes: Note[]; doodles: Doodle[]; date?: string }
 interface Source { fileBytes: Uint8Array; key: string; label: string; flipped?: boolean; title?: string; start?: Vec3; target?: Vec3 }
@@ -124,7 +125,7 @@ const SAMPLE = () => ({ fileBytes: sampleScene(), key: "sample-table-2", label: 
 
 // ---------- three + spark ----------
 const renderer = new THREE.WebGLRenderer({ antialias: false, alpha: true });
-renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, window.matchMedia("(pointer: coarse)").matches ? 1.5 : 2));
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.setClearColor(0x000000, 0);
 $("stage").appendChild(renderer.domElement);
@@ -170,6 +171,8 @@ async function loadPage(source) {
 
   page = restore(source.key) || { key: source.key, title: source.title || "", flipped: source.flipped ?? true, notes: [], doodles: [] };
   page.date ||= today();
+  page.notes ||= [];
+  page.notes.forEach(normalizeNoteStyle);
   page.doodles ||= [];
   $("pageDate").textContent = page.date;
   $("title").textContent = page.title;
@@ -309,7 +312,14 @@ function renderInk() {
 }
 
 // ---------- note editor ----------
-let editMode = "write", padStrokes = [], padCur = null;
+let editMode = "write", noteStyle = "thought", padStrokes = [], padCur = null;
+function setNoteStyle(style) {
+  noteStyle = style === "line" ? "line" : "thought";
+  $("styleThought").classList.toggle("on", noteStyle === "thought");
+  $("styleLine").classList.toggle("on", noteStyle === "line");
+  $("styleThought").setAttribute("aria-pressed", String(noteStyle === "thought"));
+  $("styleLine").setAttribute("aria-pressed", String(noteStyle === "line"));
+}
 function setTab(mode) {
   editMode = mode;
   $("slip").classList.toggle("draw", mode === "draw");
@@ -333,6 +343,8 @@ function redrawPad() {
 }
 $("tabWrite").onclick = () => setTab("write");
 $("tabDraw").onclick = () => setTab("draw");
+$("styleThought").onclick = () => setNoteStyle("thought");
+$("styleLine").onclick = () => setNoteStyle("line");
 
 const pad = $("pad");
 const padPt = (e) => { const r = pad.getBoundingClientRect(); return [+((e.clientX - r.left) / r.width * 260).toFixed(1), +((e.clientY - r.top) / r.height * 150).toFixed(1)]; };
@@ -357,6 +369,7 @@ $("padUndo").onclick = () => { padStrokes.pop(); redrawPad(); };
 function openEditor(target) {
   editing = target;
   const n = target.note;
+  setNoteStyle(n?.style || "thought");
   $("noteText").value = n?.text || "";
   padStrokes = n?.strokes ? n.strokes.map((s) => s.slice()) : [];
   padCur = null;
@@ -382,10 +395,11 @@ $("saveBtn").onclick = () => {
   const content = editMode === "draw" ? { strokes: padStrokes, text: "" } : { text, strokes: null };
   if (editMode === "draw" ? !padStrokes.length : !text) { closeEditor(); return; }
   if (editing.note) {
-    Object.assign(editing.note, content);
-    drawNote(editing.note);
+    const styleChanged = editing.note.style !== noteStyle;
+    Object.assign(editing.note, content, { style: noteStyle });
+    drawNote(editing.note, styleChanged);
   } else {
-    const note = { id: Date.now().toString(36), p: editing.point, ...content };
+    const note = { id: Date.now().toString(36), p: editing.point, style: noteStyle, ...content };
     page.notes.push(note);
     makeNoteEl(note, true);
   }
@@ -401,16 +415,14 @@ $("tearBtn").onclick = () => {
 // ---------- notes: floating bubbles, projected from 3D every frame ----------
 function makeNoteEl(note, fresh = false) {
   const el = document.createElement("div");
+  normalizeNoteStyle(note);
   el.className = "note" + (fresh ? " fresh" : "");
   el.innerHTML = '<svg class="trail"></svg><div class="dot"></div><div class="bob"><div class="card"><svg class="bub"></svg><span class="c"></span></div></div>';
   const seed = hash(note.id);
   const trail = el.querySelector(".trail");
-  trail.setAttribute("viewBox", "0 0 30 52");
+  trail.setAttribute("viewBox", "0 0 42 52");
   trail.setAttribute("preserveAspectRatio", "none");
-  const drift = rng(seed + 31);
-  const endX = 13 + drift() * 5;
-  const trailPoints = [[6, 51], [5 + drift() * 5, 42], [9 + drift() * 6, 33], [11 + drift() * 5, 23], [endX - 2 + drift() * 4, 13], [endX, 2]];
-  trail.appendChild(svgEl("path", { class: "trail-line", pathLength: "1", d: openCurve(trailPoints) }));
+  el.dataset.seed = String(seed >>> 0);
   el.querySelector(".bob").style.setProperty("--d", (-(seed >>> 0) % 5500) + "ms");
   const card = el.querySelector(".card");
   card.setAttribute("role", "button");
@@ -424,7 +436,7 @@ function makeNoteEl(note, fresh = false) {
   drawNote(note);
   if (fresh) setTimeout(() => el.classList.remove("fresh"), 1100);
 }
-function drawNote(note) {
+function drawNote(note, reanimate = false) {
   const el = note.el, c = el.querySelector(".c");
   c.innerHTML = "";
   if (note.strokes?.length) {
@@ -437,14 +449,82 @@ function drawNote(note) {
   } else c.textContent = note.text;
 
   const card = el.querySelector(".card");
-  card.setAttribute("aria-label", note.strokes?.length ? "Edit handwritten note" : `Edit note: ${note.text}`);
-  const w = card.offsetWidth, h = card.offsetHeight, bub = el.querySelector(".bub");
+  card.setAttribute("aria-label", `${note.style === "line" ? "Edit line annotation" : "Edit thought bubble"}: ${note.strokes?.length ? "handwritten note" : note.text}`);
+  el.classList.toggle("line", note.style === "line");
+  el.classList.toggle("thought", note.style !== "line");
+  const trail = el.querySelector(".trail");
+  trail.innerHTML = "";
+  if (note.style === "line") {
+    trail.appendChild(svgEl("path", { class: "trail-echo", d: "" }));
+    trail.appendChild(svgEl("path", { class: "trail-line", pathLength: "1", d: "" }));
+  } else {
+    [[8, 46, 1.4], [12, 31, 2.2], [17, 12, 3.1]].forEach(([cx, cy, r], index) => {
+      trail.appendChild(svgEl("circle", { class: "thought-dot", "data-index": index, "data-cx": cx, "data-cy": cy, "data-r": r, cx, cy, r }));
+    });
+  }
+  const bub = el.querySelector(".bub");
+  const w = card.offsetWidth, h = card.offsetHeight;
   bub.setAttribute("width", w); bub.setAttribute("height", h);
   bub.innerHTML = "";
-  bub.appendChild(svgEl("path", { class: "pen filled", pathLength: "1", d: penLoop(w / 2, h / 2, w / 2 + 2, h / 2 + 2, hash(note.id) + 9, { square: 3, wobble: 1.3, turns: 1.08 }) }));
+  if (note.style !== "line") {
+    bub.appendChild(svgEl("path", { class: "pen filled", pathLength: "1", d: penLoop(w / 2, h / 2, w / 2 + 2, h / 2 + 2, hash(note.id) + 9, { square: 3, wobble: 1.3, turns: 1.08 }) }));
+  }
+  if (reanimate) {
+    el.classList.remove("fresh");
+    void el.offsetWidth;
+    el.classList.add("fresh");
+    setTimeout(() => el.classList.remove("fresh"), 1100);
+  }
 }
 
 const v = new THREE.Vector3();
+const previousCameraPosition = new THREE.Vector3();
+const previousCameraQuaternion = new THREE.Quaternion();
+const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+let cameraPoseReady = false, cameraInkMotion = 0;
+function updateCameraInkMotion(dt) {
+  if (!cameraPoseReady) {
+    previousCameraPosition.copy(camera.position);
+    previousCameraQuaternion.copy(camera.quaternion);
+    cameraPoseReady = true;
+    return;
+  }
+  const travel = camera.position.distanceTo(previousCameraPosition);
+  const turn = 2 * Math.acos(Math.min(1, Math.abs(camera.quaternion.dot(previousCameraQuaternion))));
+  previousCameraPosition.copy(camera.position);
+  previousCameraQuaternion.copy(camera.quaternion);
+  if (reducedMotion) { cameraInkMotion = 0; return; }
+  const speed = Math.min(1, travel / Math.max(dt, 0.001) * 0.8 + turn / Math.max(dt, 0.001) * 1.5);
+  const easing = 1 - Math.exp(-dt * (speed > cameraInkMotion ? 12 : 3.4));
+  cameraInkMotion += (speed - cameraInkMotion) * easing;
+}
+function updateNoteSketch(note) {
+  const trail = note.el.querySelector(".trail");
+  const seed = Number(note.el.dataset.seed) || 0;
+  const phase = (seed % 997) / 997 * Math.PI * 2;
+  const pose = camera.rotation.y * 2.6 + camera.rotation.x * 1.7 + camera.position.x * 1.1 + camera.position.z * 0.8 + phase;
+  const sway = cameraInkMotion * Math.sin(pose) * 1.7;
+  const lift = cameraInkMotion * Math.cos(pose * 0.73 + 0.5) * 1.2;
+  if (cameraInkMotion > 0.07) note.el.classList.add("moving");
+  else if (cameraInkMotion < 0.025) note.el.classList.remove("moving");
+  const flexKey = `${sway.toFixed(1)}:${lift.toFixed(1)}`;
+  if (trail.dataset.flex === flexKey) return;
+  trail.dataset.flex = flexKey;
+  if (note.style === "line") {
+    const points = [[4, 51], [11 + sway * 0.12, 44 - lift * 0.12], [19 + sway * 0.62, 35 + lift * 0.32], [29 - sway * 0.4, 28 + lift * 0.35], [38, 26]];
+    const echoPoints = points.map(([x, y], i) => [x + (i > 0 && i < 4 ? 0.65 : 0), y + (i > 0 && i < 4 ? 0.65 : 0)]);
+    trail.querySelector(".trail-line").setAttribute("d", openCurve(points));
+    trail.querySelector(".trail-echo").setAttribute("d", openCurve(echoPoints));
+  } else {
+    trail.querySelectorAll(".thought-dot").forEach((dot, i) => {
+      const scale = (i + 1) / 3;
+      const x = Number(dot.dataset.cx) + sway * scale * 0.55;
+      const y = Number(dot.dataset.cy) - lift * scale * 0.42;
+      dot.setAttribute("cx", x.toFixed(1));
+      dot.setAttribute("cy", y.toFixed(1));
+    });
+  }
+}
 function placeNotes() {
   if (!splat) return;
   splat.updateMatrixWorld();
@@ -459,6 +539,7 @@ function placeNotes() {
     if (!visible) continue;
     n.el.style.transform = `translate(${(v.x + 1) / 2 * window.innerWidth}px, ${(1 - v.y) / 2 * window.innerHeight}px)`;
     n.el.style.zIndex = String(10000 - Math.round(dist * 100)); // nearer notes on top
+    updateNoteSketch(n);
   }
 }
 
@@ -595,6 +676,7 @@ renderer.setAnimationLoop(() => {
   const dt = Math.min(clock.getDelta(), 0.1);
   if (floatMode) updateFloat(dt); else controls.update();
   camera.updateMatrixWorld();
+  updateCameraInkMotion(dt);
   renderer.render(scene, camera);
   placeNotes();
   renderInk();
