@@ -10,10 +10,20 @@
   --pencil-faint: rgba(139, 133, 123, 0.62);
   --seal: #b63f2f;
 
-  /* a very faint fibre: fine grain plus long, sparse wisps (SVG noise, no image file) */
   --fibre: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='420' height='420'%3E%3Cfilter id='g' x='0' y='0'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' seed='3' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0.42 0 0 0 0 0.37 0 0 0 0 0.29 0.5 0 0 0 -0.22'/%3E%3C/filter%3E%3Cfilter id='f' x='0' y='0'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.045 0.016' numOctaves='5' seed='8' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0.45 0 0 0 0 0.39 0 0 0 0 0.3 0.42 0 0 0 -0.25'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23g)'/%3E%3Crect width='100%25' height='100%25' filter='url(%23f)'/%3E%3C/svg%3E");
   --fibre-size: 420px;
   --halo: 0 0 2px var(--paper), 0 0 6px var(--paper), 0 0 12px rgba(246, 242, 234, 0.9);
+
+  /* the print: a little faded, edges dissolving into the paper, a faint warm leak in one corner */
+  --scan-saturate: 0.75;
+  --scan-contrast: 0.88;   /* with the lift below, black rises to ~6% and white stays white */
+  --scan-lift: 1.064;
+  --vignette: color-mix(in srgb, var(--paper) 30%, transparent);
+  --leak: rgba(236, 176, 124, 0.075);
+
+  /* bubbles */
+  --soap: var(--paper);
+  --glint: #fffdf9;
 
   /* type: a pen for titles and notes, pencil marginalia for everything else */
   --hand: "Zen Kurenaido", "Bradley Hand", "Segoe Print", cursive;
@@ -21,23 +31,25 @@
   --margin-weight: 300;
   --margin-size: 10.5px;
   --margin-track: 0.22em;
-  --title-size: clamp(24px, 2.6vw, 34px);
+  --title-size: 21px;
+  --title-max: min(44vw, 340px);
   --note-size: 19px;
 
   /* touch and motion */
   --tap: 44px;
   --ease-pen: cubic-bezier(.35, .1, .3, 1);
 
-  /* the page: the scan sits like a photo pasted in, with paper all round */
+  /* the page: wide margins of paper, the print set in them */
   --safe-top: env(safe-area-inset-top, 0px);
   --safe-right: env(safe-area-inset-right, 0px);
   --safe-bottom: env(safe-area-inset-bottom, 0px);
   --safe-left: env(safe-area-inset-left, 0px);
-  --mx: calc(max(var(--safe-left), var(--safe-right)) + clamp(30px, 6vw, 96px));
-  --mt: calc(var(--safe-top) + clamp(92px, 13vh, 128px));
+  --mx: calc(max(var(--safe-left), var(--safe-right)) + clamp(36px, 7vw, 120px));
+  --mt: calc(var(--safe-top) + clamp(72px, 11vh, 110px));
   --mb: calc(var(--safe-bottom) + clamp(96px, 14vh, 136px));
-  --head-top: calc(var(--safe-top) + clamp(20px, 3.4vh, 38px));
-  --nav-bottom: calc(var(--safe-bottom) + clamp(16px, 3.4vh, 38px));
+  --row-top: calc(var(--safe-top) + clamp(10px, 2.4vh, 26px));
+  --row-bottom: calc(var(--safe-bottom) + clamp(10px, 2.6vh, 28px));
+  --colophon-bottom: calc(var(--row-bottom) + 6px);
 }
 
 * { box-sizing: border-box; }
@@ -70,45 +82,57 @@ svg { overflow: visible; }
 .ink-body { fill: currentColor; stroke: none; }
 
 .journal-viewer { position: fixed; inset: 0; isolation: isolate; }
-#stage canvas { position: fixed; inset: 0; z-index: 0; display: block; width: 100%; height: 100%; touch-action: none; }
 
-/* handwriting and scene doodles stay in their own projection layers */
+/* ---------- the scan: a faded print, loosely cut, pasted in (its torn mask is made in code) ---------- */
+#stage canvas {
+  position: fixed; inset: 0; z-index: 0; display: block; width: 100%; height: 100%; touch-action: none;
+  filter: saturate(var(--scan-saturate)) contrast(var(--scan-contrast)) brightness(var(--scan-lift));
+}
+#haze {
+  position: fixed;
+  top: var(--mt); left: var(--mx); right: var(--mx); bottom: var(--mb);
+  z-index: 2;
+  overflow: hidden;
+  pointer-events: none;
+  background: radial-gradient(ellipse 74% 70% at 50% 48%, transparent 52%, var(--vignette) 100%);
+}
+/* warm light falling on one corner of the page; the gradient is gone long before the element ends */
+#leak {
+  position: fixed;
+  inset: -25%;
+  z-index: 3;
+  pointer-events: none;
+  background: radial-gradient(circle at var(--leak-x, 70%) var(--leak-y, 30%), var(--leak), transparent 28%);
+  animation: leak 30s ease-in-out infinite alternate;
+}
+@keyframes leak {
+  from { translate: 0 0; opacity: 0.75; }
+  to { translate: var(--leak-dx, 6%) var(--leak-dy, 4%); opacity: 1; }
+}
+
+/* handwriting and scene doodles stay in their own projection layer, cut like the print */
 #ink { position: fixed; inset: 0; z-index: 39; width: 100%; height: 100%; pointer-events: none; }
 #ink path { fill: var(--ink); stroke: none; }
 
-/* ---------- notes ---------- */
+/* ---------- notes: bubbles in the room (placed, sized and softened per frame by the engine) ---------- */
 #notes { position: fixed; inset: 0; z-index: 40; pointer-events: none; }
-.note { position: absolute; left: 0; top: 0; will-change: transform; }
+.note { position: absolute; left: 0; top: 0; }
 .dot { position: absolute; left: -2.5px; top: -2.5px; z-index: 3; width: 5px; height: 5px; border-radius: 50%; background: var(--ink); }
-.trail { position: absolute; left: -5px; top: -52px; z-index: 0; width: 42px; height: 52px; pointer-events: none; }
+.trail { position: absolute; left: 0; top: 0; z-index: 0; width: 1px; height: 1px; pointer-events: none; }
 .trail .penline { color: var(--ink-soft); }
-.dot-fill { fill: var(--paper); }
-.trail-echo { fill: none; stroke: var(--pencil-faint); stroke-width: 0.8; stroke-linecap: round; opacity: 0; transition: opacity 220ms ease; }
-.note.moving .trail-echo { opacity: 0.4; }
-
-/* a bubble drifts on its own slow path, a few px at most */
-.bob {
-  position: absolute; left: 0; top: 0; z-index: 2;
-  animation: drift var(--dur, 15s) ease-in-out infinite;
-  animation-delay: var(--d, 0s);
-}
-@keyframes drift {
-  0%, 100% { translate: 0 0; rotate: 0deg; }
-  25% { translate: var(--x1, 1px) var(--y1, -2px); rotate: var(--tilt, 0.4deg); }
-  50% { translate: var(--x2, -1px) var(--y2, -1px); rotate: 0deg; }
-  75% { translate: var(--x3, 1px) var(--y3, 1px); rotate: calc(var(--tilt, 0.4deg) * -1); }
-}
+.dot-fill { fill: var(--soap); fill-opacity: 0.7; }
+.bob { position: absolute; left: 0; top: 0; z-index: 2; transform-origin: 0 0; }
 .card {
   position: absolute;
-  left: 5px;
-  bottom: 57px;
+  left: -30px;
+  bottom: 6px;
   isolation: isolate;
   pointer-events: auto;
   cursor: pointer;
   width: max-content;
   min-width: 48px;
   max-width: min(210px, 58vw);
-  padding: 12px 18px 14px;
+  padding: 13px 20px 15px;
   color: var(--ink);
   font: 400 var(--note-size)/1.28 var(--hand);
   letter-spacing: 0.025em;
@@ -116,15 +140,19 @@ svg { overflow: visible; }
   overflow-wrap: anywhere;
   text-align: center;
   text-transform: lowercase;
-  translate: var(--shift, 0px) 0;
-  transition: translate 300ms ease-out;
+  text-shadow: 0 0 6px var(--soap);
 }
 .bub { position: absolute; left: 0; top: 0; z-index: -1; }
-.bub-fill { fill: var(--paper); fill-opacity: 0.94; }
+/* a soap bubble: a barely-there body, brighter where the light catches it; the ink outline is what you read */
+.bub-body { opacity: calc(0.9 + var(--near, 0) * 0.1); }
+.soap-light { stop-color: var(--glint); stop-opacity: 0.8; }
+.soap-mid { stop-color: var(--soap); stop-opacity: 0.64; }
+.soap-edge { stop-color: var(--soap); stop-opacity: 0.48; }
+.soap-glint { fill: none; stroke: var(--glint); stroke-width: 2.4; stroke-linecap: round; opacity: 0.6; }
 .note.line .bub { display: none; }
 .note.line .card {
-  left: 35px;
-  top: -26px;
+  left: 22px;
+  top: 0;
   bottom: auto;
   transform: translateY(-50%);
   min-width: 0;
@@ -139,63 +167,61 @@ svg { overflow: visible; }
 .note.line .c svg { margin: 0; }
 .c svg path, #padInk path { fill: var(--ink); stroke: none; }
 
-/* ---------- the page: paper margin, frame, header ---------- */
-#mat { position: fixed; inset: 0; z-index: 45; pointer-events: none; border-style: solid; border-color: transparent; border-width: var(--mt) var(--mx) var(--mb); }
-#mat::before {
-  content: "";
-  position: fixed;
-  inset: 0;
-  background: var(--fibre) 0 0 / var(--fibre-size) repeat, var(--paper);
-  -webkit-mask: linear-gradient(#000 0 0) top / 100% var(--mt) no-repeat,
-    linear-gradient(#000 0 0) bottom / 100% var(--mb) no-repeat,
-    linear-gradient(#000 0 0) left / var(--mx) 100% no-repeat,
-    linear-gradient(#000 0 0) right / var(--mx) 100% no-repeat;
-  mask: linear-gradient(#000 0 0) top / 100% var(--mt) no-repeat,
-    linear-gradient(#000 0 0) bottom / 100% var(--mb) no-repeat,
-    linear-gradient(#000 0 0) left / var(--mx) 100% no-repeat,
-    linear-gradient(#000 0 0) right / var(--mx) 100% no-repeat;
-}
-#frame { position: fixed; inset: 0; z-index: 46; width: 100%; height: 100%; pointer-events: none; }
+/* ---------- the margins: tools are words written round the print ---------- */
+button.mark, .actions button, .chip { position: relative; min-width: var(--tap); min-height: var(--tap); }
+button.mark { display: inline-grid; place-items: center; padding: 0 calc(10px - var(--margin-track) / 2) 0 calc(10px + var(--margin-track) / 2); color: var(--ink); transition: color 200ms ease; }
+.mark-ink { position: absolute; left: 0; top: 0; width: 1px; height: 1px; pointer-events: none; }
+.mark-ink .penline { color: var(--ink-soft); }
+.mark-ink .penline.faint { color: var(--pencil-faint); }
 
-.journal-header {
+.margin { position: fixed; z-index: 60; display: flex; align-items: center; gap: 2px; pointer-events: auto; }
+.margin.top-left { top: var(--row-top); left: calc(var(--mx) - 10px); }
+.margin.bottom-left { bottom: var(--row-bottom); left: calc(var(--mx) - 10px); }
+.margin.bottom-center { bottom: var(--row-bottom); left: 50%; transform: translateX(-50%); }
+.margin button.tool { color: var(--pencil); }
+.margin button.tool.on { color: var(--ink); }
+#undoBtn { display: none; color: var(--pencil); }
+#undoBtn.show { display: inline-grid; }
+
+/* the colophon, as on a card: a small lettered title, the date in pencil, the seal beside them */
+.colophon {
   position: fixed;
-  top: var(--head-top);
-  left: calc(var(--mx) - 2px);
-  right: calc(var(--mx) - 12px);
+  right: calc(var(--mx) - 4px);
+  bottom: var(--colophon-bottom);
   z-index: 60;
   display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-  pointer-events: none;
+  align-items: center;
+  gap: 14px;
+  pointer-events: auto;
 }
-.header-story { display: flex; min-width: 0; pointer-events: auto; }
-.head-text { position: relative; display: flex; flex-direction: column; align-items: flex-start; min-width: 0; }
+.colophon-text { position: relative; display: flex; flex-direction: column; align-items: flex-start; min-width: 0; }
 #title {
   display: block;
   min-width: 0;
-  max-width: min(54vw, 520px);
+  max-width: var(--title-max);
   overflow: hidden;
   outline: none;
+  padding: 2px 1px 1px;
   color: var(--ink);
-  font: 400 var(--title-size)/1.08 var(--hand);
-  letter-spacing: 0.02em;
+  font: 400 var(--title-size)/1.15 var(--hand);
+  letter-spacing: 0.04em;
   text-overflow: ellipsis;
   text-transform: lowercase;
   white-space: nowrap;
   -webkit-user-select: text;
   user-select: text;
 }
+#title .ch { display: inline-block; white-space: pre; }
 #title:empty::before { content: "untitled place"; color: var(--pencil); }
 #titleLine { position: absolute; left: 0; top: 0; width: 1px; height: 1px; pointer-events: none; }
-.dateline { display: flex; align-items: center; gap: 10px; margin-top: 9px; padding-left: 1px; }
-#pageDate { color: var(--pencil); white-space: nowrap; }
+#pageDate { margin-top: 8px; padding-left: 1px; color: var(--pencil); white-space: nowrap; }
 #seal {
   flex: none;
   display: inline-grid;
   place-items: center;
   width: 17px;
   height: 18px;
+  margin-top: 4px;
   background: var(--seal);
   color: var(--paper);
   font: 400 8px/1 var(--margin);
@@ -204,14 +230,6 @@ svg { overflow: visible; }
   filter: url(#rough);
   opacity: 0.92;
 }
-.header-actions { display: flex; align-items: center; pointer-events: auto; margin-top: -6px; }
-
-/* every button reads as a pencilled word; its edge, if any, is a pen mark drawn in by the engine */
-button.mark, .actions button, .chip { position: relative; min-width: var(--tap); min-height: var(--tap); }
-button.mark { display: inline-grid; place-items: center; padding: 0 calc(10px - var(--margin-track) / 2) 0 calc(10px + var(--margin-track) / 2); color: var(--ink); transition: color 200ms ease; }
-.mark-ink { position: absolute; left: 0; top: 0; width: 1px; height: 1px; pointer-events: none; }
-.mark-ink .penline { color: var(--ink-soft); }
-.mark-ink .penline.faint { color: var(--pencil-faint); }
 
 #status {
   position: fixed;
@@ -225,16 +243,15 @@ button.mark { display: inline-grid; place-items: center; padding: 0 calc(10px - 
   pointer-events: none;
   transition: opacity 350ms ease;
 }
+/* hints live in the top margin, opposite open and flip: never over the print */
 #hint {
   position: fixed;
-  left: 50%;
-  bottom: calc(var(--nav-bottom) + var(--tap) + 10px);
+  top: calc(var(--row-top) + 14px);
+  right: var(--mx);
   z-index: 62;
-  width: max-content;
-  max-width: min(86vw, 420px);
-  transform: translateX(-50%);
+  max-width: min(52vw, 420px);
   color: var(--pencil);
-  text-align: center;
+  text-align: right;
   opacity: 0;
   pointer-events: none;
   transition: opacity 260ms ease;
@@ -242,36 +259,14 @@ button.mark { display: inline-grid; place-items: center; padding: 0 calc(10px - 
 #hint.show { opacity: 1; }
 #help {
   position: fixed;
-  left: var(--mx);
-  bottom: calc(var(--mb) - 34px);
+  top: calc(var(--row-top) + 14px);
+  left: 50%;
   z-index: 48;
-  max-width: calc(50vw - var(--mx) - 150px);
-  color: var(--pencil);
+  transform: translateX(-50%);
+  color: var(--pencil-faint);
+  white-space: nowrap;
   pointer-events: none;
 }
-#undoBtn {
-  position: fixed;
-  right: calc(var(--mx) + 6px);
-  bottom: calc(var(--mb) + 6px);
-  z-index: 58;
-  display: none;
-  text-shadow: var(--halo);
-}
-#undoBtn.show { display: inline-grid; }
-
-nav {
-  position: fixed;
-  left: 50%;
-  bottom: var(--nav-bottom);
-  z-index: 60;
-  display: flex;
-  align-items: center;
-  gap: clamp(4px, 2vw, 18px);
-  transform: translateX(-50%);
-  pointer-events: auto;
-}
-nav button.mark { min-width: 76px; color: var(--pencil); }
-nav button.mark.on { color: var(--ink); }
 
 /* the joystick is a pencil circle with a small inked one inside */
 #stick {
@@ -357,37 +352,39 @@ nav button.mark.on { color: var(--ink); }
 
 input[type="file"] { display: none; }
 
-/* ---------- phones, portrait ---------- */
+
+/* ---------- phones, portrait: the colophon sits on its own line above the tools ---------- */
 @media (orientation: portrait) and (max-width: 700px) {
   :root {
     --mx: calc(max(var(--safe-left), var(--safe-right)) + 22px);
-    --mt: calc(var(--safe-top) + 104px);
-    --mb: calc(var(--safe-bottom) + 128px);
-    --head-top: calc(var(--safe-top) + 26px);
-    --nav-bottom: calc(var(--safe-bottom) + 16px);
-    --title-size: clamp(22px, 6.4vw, 27px);
+    --mt: calc(var(--safe-top) + 64px);
+    --mb: calc(var(--safe-bottom) + 150px);
+    --row-top: calc(var(--safe-top) + 8px);
+    --row-bottom: calc(var(--safe-bottom) + 8px);
+    --colophon-bottom: calc(var(--safe-bottom) + 62px);
+    --title-size: 20px;
+    --title-max: 62vw;
   }
-  #title { max-width: 58vw; }
   #help { display: none; }
-  nav button.mark { min-width: 72px; }
+  #undoBtn { position: absolute; right: 0; bottom: calc(100% + 2px); }
   #editor { align-items: flex-end; padding: 10px 10px max(8px, var(--safe-bottom)); }
   .slip { width: min(520px, 100%); max-height: calc(100dvh - var(--safe-top) - 12px); padding: 22px 22px max(12px, var(--safe-bottom)); }
 }
 
-/* ---------- phones, landscape: everything moves into thin top and bottom margins ---------- */
+/* ---------- phones, landscape: one thin row of words above and below the print ---------- */
 @media (orientation: landscape) and (max-height: 520px) {
   :root {
     --mx: calc(max(var(--safe-left), var(--safe-right)) + 34px);
-    --mt: calc(var(--safe-top) + 62px);
-    --mb: calc(var(--safe-bottom) + 54px);
-    --head-top: calc(var(--safe-top) + 10px);
-    --nav-bottom: calc(var(--safe-bottom) + 5px);
-    --title-size: 22px;
+    --mt: calc(var(--safe-top) + 50px);
+    --mb: calc(var(--safe-bottom) + 58px);
+    --row-top: calc(var(--safe-top) + 3px);
+    --row-bottom: calc(var(--safe-bottom) + 4px);
+    --colophon-bottom: calc(var(--safe-bottom) + 7px);
+    --title-size: 17px;
+    --title-max: 30vw;
   }
-  .head-text { flex-direction: row; align-items: baseline; gap: 16px; }
-  .dateline { margin-top: 0; }
+  #pageDate { margin-top: 4px; }
   #help { display: none; }
-  #hint { left: auto; right: var(--mx); bottom: calc(var(--nav-bottom) + 14px); max-width: 24vw; transform: none; text-align: right; }
   #editor { padding-top: max(8px, var(--safe-top)); padding-bottom: max(8px, var(--safe-bottom)); }
   .slip { width: min(440px, 92vw); max-height: calc(100dvh - var(--safe-top) - var(--safe-bottom) - 16px); padding-top: 16px; padding-bottom: 8px; }
   #noteText { height: 66px; }
@@ -396,5 +393,5 @@ input[type="file"] { display: none; }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.01ms !important; animation-delay: 0s !important; animation-iteration-count: 1 !important; scroll-behavior: auto !important; transition-duration: 0.01ms !important; }
-  .bob { animation: none !important; }
+  #leak { animation: none !important; }
 }

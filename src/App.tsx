@@ -3,7 +3,7 @@ import { mountJournal } from "./journal/engine";
 
 // The interface stays declarative here; the journal engine attaches to these
 // stable IDs after mount and owns the viewer, notes, drawing, and persistence.
-// Every visible line (frame, underlines, loops, joystick, slip edges) is drawn
+// Every visible line (underlines, loops, joystick, slip edges) is drawn
 // into the empty <svg> hosts below by the engine's pen, not by CSS borders.
 export default function App() {
   const mounted = useRef(false);
@@ -33,50 +33,51 @@ export default function App() {
 
       <main className="journal-viewer" aria-label="Splat Journal memory viewer">
         <div id="stage" role="application" aria-label="Interactive 3D memory" />
+        {/* paper-toned haze over the scan: a soft vignette and a faint drifting light leak */}
+        <div id="haze" aria-hidden="true" />
+        <div id="leak" aria-hidden="true" />
         <svg id="ink" aria-hidden="true" />
         <div id="notes" aria-label="Memory notes" />
         <div id="status" role="status" aria-live="polite">loading</div>
-        <button id="undoBtn" className="mark" type="button" aria-label="Undo last drawing stroke">undo</button>
         <div id="stick" role="group" aria-label="Float navigation joystick">
           <svg id="stickRing" viewBox="0 0 96 96" aria-hidden="true" />
           <div id="knob">
             <svg id="knobRing" viewBox="0 0 36 36" aria-hidden="true" />
           </div>
         </div>
-        <div id="mat" aria-hidden="true" />
-        <svg id="frame" aria-hidden="true" />
         <div id="hint" role="status" aria-live="polite" />
-
-        <header className="journal-header">
-          <div className="header-story">
-            <div className="head-text">
-              <div
-                id="title"
-                contentEditable
-                suppressContentEditableWarning
-                spellCheck={false}
-                role="textbox"
-                aria-label="Memory title. Tap to rename."
-              />
-              <svg id="titleLine" aria-hidden="true" />
-              <div className="dateline">
-                <span id="pageDate" />
-                <span id="seal" aria-hidden="true"><span>01</span></span>
-              </div>
-            </div>
-          </div>
-          <div className="header-actions" aria-label="Memory actions">
-            <button id="openBtn" className="header-action mark" type="button" aria-label="Open a 3D scan">open</button>
-            <button id="flipBtn" className="header-action mark" type="button" aria-label="Flip scan orientation">flip</button>
-          </div>
-        </header>
         <div id="help" aria-live="polite" />
 
-        <nav aria-label="Memory tools">
-          <button id="floatBtn" className="mark on" type="button" aria-label="Explore the memory" aria-pressed="true">explore</button>
-          <button id="noteBtn" className="mark" type="button" aria-label="Add or edit a note" aria-pressed="false">note</button>
-          <button id="drawBtn" className="mark" type="button" aria-label="Draw on the memory" aria-pressed="false">draw</button>
+        {/* tools are words in the margins of the page */}
+        <div className="margin top-left" aria-label="Memory actions">
+          <button id="openBtn" className="mark" type="button" aria-label="Open a 3D scan">open</button>
+          <button id="flipBtn" className="mark" type="button" aria-label="Flip scan orientation">flip</button>
+        </div>
+        <nav className="margin bottom-left" aria-label="Memory tools">
+          <button id="noteBtn" className="mark tool" type="button" aria-label="Add or edit a note" aria-pressed="false">note</button>
+          <button id="drawBtn" className="mark tool" type="button" aria-label="Draw on the memory" aria-pressed="false">draw</button>
+          <button id="undoBtn" className="mark" type="button" aria-label="Undo last drawing stroke">undo</button>
         </nav>
+        <div className="margin bottom-center">
+          <button id="floatBtn" className="mark tool on" type="button" aria-label="Float through the memory" aria-pressed="true">float</button>
+        </div>
+
+        {/* the colophon: title, date and seal in the corner, as on a card */}
+        <footer className="colophon">
+          <div className="colophon-text">
+            <div
+              id="title"
+              contentEditable
+              suppressContentEditableWarning
+              spellCheck={false}
+              role="textbox"
+              aria-label="Memory title. Tap to rename."
+            />
+            <svg id="titleLine" aria-hidden="true" />
+            <span id="pageDate" />
+          </div>
+          <span id="seal" aria-hidden="true"><span>01</span></span>
+        </footer>
         <input type="file" id="fileInput" accept=".spz,.ply,.splat,.ksplat,.sog" />
 
         <div id="editor" role="dialog" aria-modal="true" aria-label="Memory note editor">

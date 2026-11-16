@@ -1,10 +1,12 @@
 // pen: every line in the interface is generated to look drawn by hand.
 //
 // A line is described by its centre ("where the nib travelled") as one or more
-// strokes of points. It is rendered as a filled outline whose width swells and
-// thins along the way (pen pressure) and tapers where the nib lands and lifts.
-// PenLine keeps such a line alive: it can be drawn on, and now and then it is
-// quietly redrawn with a slightly different hand.
+// strokes of points. Before it is inked, the centre is roughened the way a hand
+// roughens it: a slow drift over the whole stroke, a tremor every few tens of
+// pixels, and a fine jitter on top. Each stroke starts with a small hesitation
+// blob and lifts off in a short hooked tail. It is then rendered as a filled
+// outline whose width swells and thins (pen pressure). PenLine keeps such a line
+// alive: it can be drawn on, and now and then it is quietly drawn again.
 
 export type Pt = [number, number];
 export type Strokes = Pt[][];
@@ -29,6 +31,7 @@ export const hash = (str: unknown) => {
 };
 export const f1 = (n: number) => n.toFixed(1);
 export const reducedMotion = () => window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+const clamp = (v: number, a: number, b: number) => Math.min(b, Math.max(a, v));
 
 /** smooth curve through points (uniform Catmull-Rom as cubic Béziers) */
 export function openCurve(p: Pt[]): string {
@@ -57,38 +60,125 @@ function spline(p: Pt[], step: number): Pt[] {
   }
   return out;
 }
+function lengths(p: Pt[]) {
+  const at = [0];
+  for (let i = 1; i < p.length; i++) at.push(at[i - 1] + Math.hypot(p[i][0] - p[i - 1][0], p[i][1] - p[i - 1][1]));
+  return at;
+}
+function normalAt(p: Pt[], i: number): Pt {
+  const a = p[Math.max(0, i - 1)], b = p[Math.min(p.length - 1, i + 1)];
+  const l = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
+  return [-(b[1] - a[1]) / l, (b[0] - a[0]) / l];
+}
+
+/** 1-d value noise along a stroke: knots `gapMin`–`gapMax` px apart, eased between */
+function knotNoise(r: () => number, length: number, gapMin: number, gapMax: number, smooth = true) {
+  const at = [0], val = [r() * 2 - 1];
+  while (at[at.length - 1] < length) { at.push(at[at.length - 1] + gapMin + r() * (gapMax - gapMin)); val.push(r() * 2 - 1); }
+  let k = 0;
+  return (s: number) => {
+    while (k > 0 && at[k] > s) k--;
+    while (k < at.length - 2 && at[k + 1] < s) k++;
+    const u = clamp((s - at[k]) / (at[k + 1] - at[k] || 1), 0, 1), e = smooth ? (1 - Math.cos(u * Math.PI)) / 2 : u;
+    return val[k] + (val[k + 1] - val[k]) * e;
+  };
+}
+
+// ---------- how a hand roughens a line ----------
+
+/**
+ * Three scales of unsteadiness added together, across the stroke:
+ * a slow drift over the whole length (±3 px), a tremor every 20–40 px (±1 px),
+ * and a fine jitter (±0.3 px). Small marks get proportionally less.
+ * `slow` fixes the drift and tremor (the line's character), `fast` the jitter.
+ */
+export function roughen(p: Pt[], slow: number, fast: number, k = 1): Pt[] {
+  if (p.length < 2 || !k) return p;
+  const at = lengths(p), L = at[at.length - 1];
+  const r = rng(slow), rf = rng(fast);
+  const aDrift = k * Math.min(3, L * 0.012), aTremor = k * Math.min(1, L * 0.008), aFine = k * Math.min(0.3, L * 0.005);
+  const w1 = 0.5 + r() * 0.9, w2 = 1.6 + r() * 1.4, ph1 = r() * 6.283, ph2 = r() * 6.283;
+  const tremor = knotNoise(r, L, 20, 40), fine = knotNoise(rf, L, 2.5, 5, false);
+  return p.map((q, i) => {
+    const s = at[i], u = s / (L || 1), n = normalAt(p, i);
+    const off = aDrift * (0.75 * Math.sin(Math.PI * w1 * u + ph1) + 0.25 * Math.sin(Math.PI * w2 * u + ph2))
+      + aTremor * tremor(s) + aFine * fine(s);
+    return [q[0] + n[0] * off, q[1] + n[1] * off] as Pt;
+  });
+}
+
+/** where the nib lifts it flicks: a short tail curving off the line */
+export function hookTail(p: Pt[], seed: number, k = 1): Pt[] {
+  if (p.length < 3 || !k) return p;
+  const at = lengths(p), L = at[at.length - 1];
+  if (L < 6) return p;
+  const r = rng(seed), len = k * clamp(L * 0.035, 1.6, 6), side = r() < 0.5 ? -1 : 1, turn = side * (0.9 + r() * 0.9);
+  const e = p[p.length - 1];
+  let j = p.length - 2;
+  while (j > 0 && L - at[j] < 3) j--;
+  let a = Math.atan2(e[1] - p[j][1], e[0] - p[j][0]);
+  const out = p.slice(), steps = 5;
+  let x = e[0], y = e[1];
+  for (let i = 1; i <= steps; i++) {
+    a += turn * (Math.pow(i / steps, 1.4) - Math.pow((i - 1) / steps, 1.4));
+    x += Math.cos(a) * len / steps; y += Math.sin(a) * len / steps;
+    out.push([x, y]);
+  }
+  return out;
+}
 
 // ---------- centre lines ----------
 
-export interface LoopOpts { square?: number; wobble?: number; turns?: number }
-/** a loop the way a pen draws one: a little more than one turn, never quite meeting itself */
-export function loopPts(cx: number, cy: number, rx: number, ry: number, seed: number, { square = 2.4, wobble = 1.2, turns = 1.1 }: LoopOpts = {}): Pt[] {
-  const r = rng(seed), n = 18, a0 = -Math.PI * (0.55 + r() * 0.3), steps = Math.ceil(n * turns), pts: Pt[] = [];
-  const spiral = (r() < 0.5 ? -1 : 1) * (0.04 + r() * 0.04); // the second pass lands a touch inside or outside the first
-  const tilt = (r() - 0.5) * 0.06;
+export interface LoopOpts { square?: number; turns?: number; flat?: number; wobble?: number }
+/**
+ * a loop the way a pen draws one: it goes round 15–30% further than it needs to,
+ * comes back on a different radius, and one side of it is flatter than the other
+ */
+export function loopPts(cx: number, cy: number, rx: number, ry: number, seed: number, { square = 2.25, turns, flat, wobble = 0 }: LoopOpts = {}): Pt[] {
+  const r = rng(seed), per = 32;
+  const t = turns ?? 1.15 + r() * 0.15;
+  const a0 = -Math.PI * (0.5 + r() * 0.4), dir = r() < 0.85 ? 1 : -1, steps = Math.ceil(per * t);
+  // the second pass comes back 8–15% off the first radius, but never more than ~7 px on a big loop
+  const spiral = (r() < 0.5 ? -1 : 1) * Math.min(0.08 + r() * 0.07, 7 / Math.max(rx, ry, 1));
+  const flatAt = r() * 6.283, flatBy = flat ?? 0.1 + r() * 0.1, tilt = (r() - 0.5) * 0.08;
+  const pts: Pt[] = [];
   for (let i = 0; i <= steps; i++) {
-    const a = a0 + (i / n) * Math.PI * 2, c = Math.cos(a), s = Math.sin(a), drift = 1 + (i / steps - 0.5) * spiral;
-    const x = Math.sign(c) * Math.pow(Math.abs(c), 2 / square) * rx * drift;
-    const y = Math.sign(s) * Math.pow(Math.abs(s), 2 / square) * ry * drift;
-    pts.push([cx + x - y * tilt + (r() - 0.5) * wobble * 2, cy + y + x * tilt + (r() - 0.5) * wobble * 2]);
+    const a = a0 + dir * (i / per) * Math.PI * 2, c = Math.cos(a), s = Math.sin(a);
+    const grow = 1 + (i / steps - 0.5) * spiral;
+    const press = 1 - flatBy * Math.pow(Math.max(0, Math.cos(a - flatAt)), 2);
+    const x = Math.sign(c) * Math.pow(Math.abs(c), 2 / square) * rx * grow * press;
+    const y = Math.sign(s) * Math.pow(Math.abs(s), 2 / square) * ry * grow * press;
+    pts.push([cx + x - y * tilt + (r() - 0.5) * wobble, cy + y + x * tilt + (r() - 0.5) * wobble]);
   }
   return pts;
 }
 
-/** a single pen stroke between two points: bowed a little, never ruler-straight */
-export function linePts(x1: number, y1: number, x2: number, y2: number, seed: number, wob = 1.2): Pt[] {
-  const r = rng(seed), len = Math.hypot(x2 - x1, y2 - y1), n = Math.max(3, Math.round(len / 70));
-  const nx = -(y2 - y1) / (len || 1), ny = (x2 - x1) / (len || 1), bow = (r() - 0.5) * Math.min(4, len * 0.012);
+/** a single pen stroke between two points: bowed, never ruler-straight */
+export function linePts(x1: number, y1: number, x2: number, y2: number, seed: number, wob = 0.6): Pt[] {
+  const r = rng(seed), len = Math.hypot(x2 - x1, y2 - y1), n = Math.max(3, Math.round(len / 40));
+  const nx = -(y2 - y1) / (len || 1), ny = (x2 - x1) / (len || 1);
+  const bow = (r() < 0.5 ? -1 : 1) * (0.4 + r() * 0.6) * Math.min(5, len * 0.018), lean = 0.35 + r() * 0.3;
   const pts: Pt[] = [];
   for (let i = 0; i <= n; i++) {
-    const t = i / n, b = Math.sin(t * Math.PI) * bow, j = (i === 0 || i === n ? 0.4 : 1) * (r() - 0.5) * wob;
+    const t = i / n, b = Math.sin(Math.pow(t, lean * 2) * Math.PI) * bow, j = (i === 0 || i === n ? 0.3 : 1) * (r() - 0.5) * wob;
     pts.push([x1 + (x2 - x1) * t + nx * (b + j), y1 + (y2 - y1) * t + ny * (b + j)]);
   }
   return pts;
 }
 
+/** a line the pen sometimes goes over twice: a second, shorter pass a hair beside the first */
+export function overLine(x1: number, y1: number, x2: number, y2: number, seed: number, twice = 0.6): Strokes {
+  const r = rng(seed ^ 0x9e37), first = linePts(x1, y1, x2, y2, seed);
+  if (r() > twice) return [first];
+  const len = Math.hypot(x2 - x1, y2 - y1), nx = -(y2 - y1) / (len || 1), ny = (x2 - x1) / (len || 1);
+  const t0 = 0.04 + r() * 0.25, t1 = 0.72 + r() * 0.33, off = (r() < 0.5 ? -1 : 1) * (0.6 + r() * 0.9);
+  const at = (t: number): Pt => [x1 + (x2 - x1) * t + nx * off, y1 + (y2 - y1) * t + ny * off];
+  const [a, b] = [at(t0), at(t1)];
+  return [first, linePts(a[0], a[1], b[0], b[1], seed + 77)];
+}
+
 /** a box drawn as four separate strokes that overshoot the corners */
-export function rectStrokes(x: number, y: number, w: number, h: number, seed: number, over = 6, wob = 1.6): Strokes {
+export function rectStrokes(x: number, y: number, w: number, h: number, seed: number, over = 6, wob = 0.8): Strokes {
   const r = rng(seed), o = () => over * (0.3 + r()), s = () => (r() - 0.5) * over * 0.35;
   return [
     linePts(x - o(), y + s(), x + w + o(), y + s(), seed + 1, wob),
@@ -114,8 +204,13 @@ export function breathe(strokes: Strokes, seed: number, amp: number): Strokes {
 
 // ---------- ink: a centre line becomes a filled, pressure-varied outline ----------
 
-export interface InkOpts { taper?: number; pressure?: number; step?: number; seed?: number }
-export function inkOutline(raw: Pt[], width: number, { taper = 9, pressure = 0.3, step = 2.5, seed = 1 }: InkOpts = {}): string {
+export interface InkOpts { taper?: number; pressure?: number; step?: number; seed?: number; blob?: number }
+/**
+ * The outline of a nib travelling along `raw`. It lands with a small hesitation
+ * blob (a little wider for the first few px), swells and thins with pressure,
+ * and thins out as it lifts.
+ */
+export function inkOutline(raw: Pt[], width: number, { taper = 9, pressure = 0.3, step = 2.5, seed = 1, blob = 3.5 }: InkOpts = {}): string {
   const p: Pt[] = [];
   for (const q of raw.length > 1 ? spline(raw, step) : raw) {
     const l = p[p.length - 1];
@@ -126,19 +221,15 @@ export function inkOutline(raw: Pt[], width: number, { taper = 9, pressure = 0.3
     const r = width * 0.62, [x, y] = p[0];
     return `M${f1(x - r)} ${f1(y)}a${f1(r)} ${f1(r)} 0 1 0 ${f1(2 * r)} 0a${f1(r)} ${f1(r)} 0 1 0 ${f1(-2 * r)} 0Z`;
   }
-  const at: number[] = [0];
-  for (let i = 1; i < p.length; i++) at.push(at[i - 1] + Math.hypot(p[i][0] - p[i - 1][0], p[i][1] - p[i - 1][1]));
-  const L = at[at.length - 1], T = Math.max(0.5, Math.min(taper, L / 3));
-  const r = rng(seed), ph1 = r() * 6.283, ph2 = r() * 6.283, l1 = 16 + r() * 18, l2 = 5 + r() * 5, land = 0.9 + r() * 0.35;
-  const ease = (u: number) => (u >= 1 ? 1 : 0.42 + 0.58 * Math.sin(Math.max(0, u) * Math.PI / 2));
+  const at = lengths(p), L = at[at.length - 1], T = Math.max(0.5, Math.min(taper, L / 3)), B = Math.min(blob, L * 0.15);
+  const r = rng(seed), ph1 = r() * 6.283, ph2 = r() * 6.283, l1 = 16 + r() * 18, l2 = 5 + r() * 5, land = 1.35 + r() * 0.25;
+  const ease = (u: number) => (u >= 1 ? 1 : 0.38 + 0.62 * Math.sin(Math.max(0, u) * Math.PI / 2));
   const left: Pt[] = [], right: Pt[] = [], half: number[] = [];
   for (let i = 0; i < p.length; i++) {
     const s = at[i];
-    // the nib lands a touch heavier than it lifts
-    const w = width * ease(s / T) * land ** Math.max(0, 1 - s / T) * ease((L - s) / T)
-      * (1 + pressure * (0.65 * Math.sin(s / l1 + ph1) + 0.35 * Math.sin(s / l2 + ph2)));
-    const a = p[Math.max(0, i - 1)], b = p[Math.min(p.length - 1, i + 1)];
-    const tl = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1, nx = -(b[1] - a[1]) / tl, ny = (b[0] - a[0]) / tl, hw = Math.max(0.12, w / 2);
+    const hesitate = B > 0 && s < B ? 1 + (land - 1) * Math.cos((s / B) * Math.PI / 2) : 1;
+    const w = width * hesitate * ease((L - s) / T) * (1 + pressure * (0.65 * Math.sin(s / l1 + ph1) + 0.35 * Math.sin(s / l2 + ph2)));
+    const [nx, ny] = normalAt(p, i), hw = Math.max(0.12, w / 2);
     half.push(hw);
     left.push([p[i][0] + nx * hw, p[i][1] + ny * hw]);
     right.push([p[i][0] - nx * hw, p[i][1] - ny * hw]);
@@ -156,7 +247,16 @@ export const inkOutlines = (strokes: Strokes, width: number, opts: InkOpts = {})
 
 // ---------- living lines ----------
 
-export interface PenOpts extends InkOpts { width: number; className?: string; breathe?: number }
+export interface PenOpts extends InkOpts {
+  width: number;
+  className?: string;
+  /** how unsteady the hand is: scales drift, tremor and jitter (default 1) */
+  wobble?: number;
+  /** finish each stroke with a hooked tail (default true) */
+  hook?: boolean;
+  /** how far a redraw may wander, in px, on top of the new jitter (default 0.45) */
+  breathe?: number;
+}
 const live = new Set<PenLine>();
 let maskId = 0;
 
@@ -165,8 +265,9 @@ export class PenLine {
   busy = false;
   private bodies: [SVGPathElement, SVGPathElement];
   private front = 0;
-  private strokes: Strokes = [];
-  private jitter = (Math.random() * 1e9) | 0;
+  private prepared: Strokes = [];
+  private readonly hand = (Math.random() * 1e9) | 0; // this line's character: drift, tremor, hook
+  private jitter = (Math.random() * 1e9) | 0;         // this drawing of it: fine jitter, pressure
   private nextJitter = 0;
   private reveal: SVGPathElement | null = null;
   private mask: SVGMaskElement | null = null;
@@ -181,15 +282,23 @@ export class PenLine {
   }
 
   private shape(jitter: number) {
-    return breathe(this.strokes, jitter, this.opts.breathe ?? 0.7);
+    const k = this.opts.wobble ?? 1;
+    const rough = this.prepared.map((p, i) => roughen(p, this.hand + i * 101, jitter + i * 7, k));
+    // a redraw changes only the jitter and this breath, so no point moves more than ~2 px
+    return breathe(rough, jitter, this.opts.breathe ?? 0.45);
   }
   private outline(jitter: number) {
-    return inkOutlines(this.shape(jitter), this.opts.width, { taper: this.opts.taper, pressure: this.opts.pressure, step: this.opts.step ?? 3.5, seed: jitter });
+    const { width, taper, pressure, blob } = this.opts;
+    return inkOutlines(this.shape(jitter), width, { taper, pressure, blob, step: this.opts.step ?? 2.5, seed: jitter });
   }
 
   /** give the line a new centre and paint it at once, without animation */
   set(strokes: Strokes) {
-    this.strokes = strokes.filter((s) => s.length);
+    const hook = this.opts.hook ?? true, k = this.opts.wobble ?? 1;
+    this.prepared = strokes.filter((s) => s.length).map((s, i) => {
+      const dense = s.length > 1 ? spline(s, 3) : s;
+      return hook ? hookTail(dense, this.hand + i * 13, Math.min(1, k + 0.3)) : dense;
+    });
     this.paint();
     return this;
   }
@@ -201,12 +310,12 @@ export class PenLine {
 
   /** ink the line on from its first point to its last; resolves once it is fully drawn */
   drawOn(delay = 0, duration = 420): Promise<void> {
-    if (reducedMotion() || !this.strokes.length || !this.g.ownerSVGElement) return Promise.resolve();
+    if (reducedMotion() || !this.prepared.length || !this.g.ownerSVGElement) return Promise.resolve();
     this.unmask();
     const id = `pen-reveal-${++maskId}`, host = this.g.ownerSVGElement;
     this.mask = svg("mask", { id, maskUnits: "userSpaceOnUse", x: -1e4, y: -1e4, width: 2e4, height: 2e4 });
     this.reveal = svg("path", {
-      d: curveOf(this.shape(this.jitter)), fill: "none", stroke: "#fff", "stroke-width": this.opts.width * 3 + 3,
+      d: curveOf(this.shape(this.jitter)), fill: "none", stroke: "#fff", "stroke-width": this.opts.width * 3.5 + 3,
       "stroke-linecap": "round", "stroke-linejoin": "round", pathLength: 1, "stroke-dasharray": "1 2", "stroke-dashoffset": 1,
     });
     this.mask.appendChild(this.reveal);
@@ -222,9 +331,9 @@ export class PenLine {
     this.mask = this.reveal = null;
   }
 
-  /** crossfade to the same line drawn again with a slightly different wobble */
+  /** crossfade to the same line drawn again with a slightly different hand */
   redraw(duration = 400) {
-    if (this.busy || this.reveal || !this.strokes.length) return false;
+    if (this.busy || this.reveal || !this.prepared.length) return false;
     this.busy = true;
     this.nextJitter = (Math.random() * 1e9) | 0;
     const out = this.bodies[this.front], inn = this.bodies[1 - this.front];

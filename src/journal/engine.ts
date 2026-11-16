@@ -7,9 +7,9 @@
 // properly is a good next step once the design settles.
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
-import { SparkRenderer, SplatMesh } from "@sparkjsdev/spark";
+import { SparkRenderer, SplatMesh, dyno } from "@sparkjsdev/spark";
 import { normalizeNoteStyle } from "./note-style.js";
-import { PenLine, rng, hash, f1, openCurve, loopPts, linePts, rectStrokes, inkOutline, keepSketching, reducedMotion } from "./pen";
+import { PenLine, rng, hash, f1, openCurve, loopPts, overLine, rectStrokes, inkOutline, keepSketching, reducedMotion } from "./pen";
 
 type Vec3 = [number, number, number];
 interface Note { id: string; p: Vec3; text: string; strokes: number[][][] | null; style?: "thought" | "line"; el?: HTMLElement }
@@ -46,7 +46,7 @@ function labelBox(b) {
 // what mark a button wears in its current state: a loop drawn round it, an underline, or nothing
 function markOf(b) {
   const on = b.classList.contains("on");
-  if (b.closest("nav")) return on ? "loop" : "faint";
+  if (b.classList.contains("tool")) return on ? "loop" : "faint";
   if (b.classList.contains("style-picker")) return on ? "loop" : "";
   if (b.closest(".tabs")) return on ? "under" : "";
   if (b.id === "saveBtn") return "loop";
@@ -66,45 +66,120 @@ function drawMarks(animate = false) {
     if (m.key === key) return;
     const kindChanged = m.key.split(":")[0] !== kind;
     m.key = key;
-    if (!m.line || kindChanged) { m.line?.dispose(); m.line = kind ? new PenLine(m.host, { width: kind === "faint" ? 0.8 : 1.1, className: kind === "faint" ? "faint" : "", taper: 5, step: 2.5, breathe: 0.5 }) : null; }
+    if (!m.line || kindChanged) {
+      m.line?.dispose();
+      m.line = kind ? new PenLine(m.host, { width: kind === "faint" ? 0.8 : 1.1, className: kind === "faint" ? "faint" : "", taper: 5, wobble: kind === "loop" ? 1 : 0.7 }) : null;
+    }
     if (!m.line) return;
     const seed = 40 + i * 13 + (kind === "loop" ? 5 : 0);
-    if (kind === "loop") m.line.set([loopPts(box.x + box.w / 2, box.y + box.h / 2 + 0.5, box.w / 2 + 10, box.h / 2 + 7, seed, { square: 2.1, wobble: 0.9, turns: 1.13 })]);
-    else m.line.set([linePts(box.x - 2, box.y + box.h + 2.5, box.x + box.w + 3, box.y + box.h + 1.5, seed, 0.6)]);
-    if (animate && kindChanged) m.line.drawOn(0, kind === "loop" ? 300 : 180);
+    if (kind === "loop") m.line.set([loopPts(box.x + box.w / 2, box.y + box.h / 2 + 0.5, box.w / 2 + 12, box.h / 2 + 8, seed)]);
+    else m.line.set(overLine(box.x - 2, box.y + box.h + 2.5, box.x + box.w + 3, box.y + box.h + 1.5, seed, kind === "under" ? 0.5 : 0.25));
+    if (animate && kindChanged) m.line.drawOn(0, kind === "loop" ? 320 : 180);
   });
+}
+
+// ---------- the title is lettered by hand: each character sits a little off the line ----------
+function letterTitle() {
+  const t = $("title");
+  if (document.activeElement === t) return; // plain text while it is being edited
+  t.textContent = "";
+  const text = page.title || "", r = rng(hash(text) ^ 0x51ed);
+  for (const ch of text) {
+    const s = document.createElement("span");
+    s.className = "ch";
+    s.textContent = ch;
+    if (ch.trim()) {
+      s.style.translate = `0 ${((r() - 0.5) * 3).toFixed(2)}px`;       // baseline ±1.5px
+      s.style.rotate = `${((r() - 0.5) * 5).toFixed(1)}deg`;
+    }
+    s.style.marginRight = `${((r() - 0.35) * 2.2).toFixed(2)}px`;      // spacing jitter
+    t.appendChild(s);
+  }
+  drawTitleLine();
 }
 function drawTitleLine() {
   const t = $("title"), host = $("titleLine");
-  let w = 112;
+  let w = 104;
   if (t.textContent.trim()) { const r = document.createRange(); r.selectNodeContents(t); w = Math.min(r.getBoundingClientRect().width, t.offsetWidth); }
-  const y = t.offsetTop + t.offsetHeight + 1;
-  penIn(host, "title", { width: 1.05, taper: 6, breathe: 0.6 }).set([linePts(-3, y + 0.5, w + 7, y - 0.8, 17, 0.8)]);
+  const x = t.offsetLeft + t.offsetWidth - w, y = t.offsetTop + t.offsetHeight + 1;
+  penIn(host, "title", { width: 1.05, taper: 7 }).set(overLine(x - 4, y + 0.5, x + w + 5, y - 1, hash(page.title || "untitled") ^ 17, 0.6));
 }
-let frameInset = 0;
+
+// ---------- the scan: a loosely cut print pasted into the page ----------
+const tornSeed = (Math.random() * 1e9) | 0; // a slightly different cut every time the page opens
+let photo = { x: 0, y: 0, w: 0, h: 0 };
+function measurePhoto() {
+  const r = $("haze").getBoundingClientRect();
+  photo = { x: r.left, y: r.top, w: r.width, h: r.height };
+}
+// walk round the photo's rectangle, pushing the edge in and out at three scales,
+// with a couple of small bites where it tore; then feather the whole thing
+function tornEdgeMask() {
+  const W = window.innerWidth, H = window.innerHeight, { x, y, w, h } = photo, r = rng(tornSeed);
+  const per = 2 * (w + h), step = 7, n = Math.ceil(per / step);
+  const slow = [r() * 6.283, r() * 6.283, 2 + r() * 3, 5 + r() * 4];
+  const knots = Array.from({ length: Math.ceil(per / 26) + 2 }, () => r() * 2 - 1);
+  const bites = Array.from({ length: 3 + Math.floor(r() * 3) }, () => ({ at: r() * per, width: 18 + r() * 34, depth: 4 + r() * 8 }));
+  const corner = Array.from({ length: 4 }, () => 6 + r() * 16);
+  const pts = [];
+  for (let i = 0; i < n; i++) {
+    const s = i * step;
+    let px, py, nx, ny, toCorner;
+    if (s < w) { px = x + s; py = y; nx = 0; ny = -1; toCorner = Math.min(s, w - s); }
+    else if (s < w + h) { px = x + w; py = y + s - w; nx = 1; ny = 0; toCorner = Math.min(s - w, w + h - s); }
+    else if (s < 2 * w + h) { px = x + w - (s - w - h); py = y + h; nx = 0; ny = 1; toCorner = Math.min(s - w - h, 2 * w + h - s); }
+    else { px = x; py = y + h - (s - 2 * w - h); nx = -1; ny = 0; toCorner = Math.min(s - 2 * w - h, per - s); }
+    const k = s / 26, k0 = Math.floor(k), u = k - k0, e = (1 - Math.cos(u * Math.PI)) / 2;
+    let off = 5 * Math.sin((s / per) * Math.PI * 2 * slow[2] + slow[0]) + 2.5 * Math.sin((s / per) * Math.PI * 2 * slow[3] + slow[1])
+      + 2.2 * (knots[k0] + (knots[k0 + 1] - knots[k0]) * e) + (r() - 0.5) * 1.6;
+    for (const b of bites) { const d = Math.abs(s - b.at); if (d < b.width / 2) off -= b.depth * Math.cos((d / b.width) * Math.PI); }
+    const ci = Math.min(3, Math.floor(s / (per / 4)));
+    if (toCorner < corner[ci]) off -= (corner[ci] - toCorner) * 0.55; // corners clipped, never square
+    pts.push(`${f1(px + nx * off)},${f1(py + ny * off)}`);
+  }
+  const svgText = `<svg xmlns='http://www.w3.org/2000/svg' width='${W}' height='${H}' viewBox='0 0 ${W} ${H}'><filter id='f' x='-5%' y='-5%' width='110%' height='110%'><feGaussianBlur stdDeviation='7'/></filter><polygon points='${pts.join(" ")}' fill='white' filter='url(#f)'/></svg>`;
+  const url = `url("data:image/svg+xml,${encodeURIComponent(svgText)}")`;
+  for (const el of [canvas, $("ink")]) {
+    el.style.webkitMaskImage = el.style.maskImage = url;
+    el.style.webkitMaskSize = el.style.maskSize = "100% 100%";
+  }
+  const haze = $("haze");
+  haze.style.webkitMaskImage = haze.style.maskImage = url;
+  haze.style.webkitMaskSize = haze.style.maskSize = `${W}px ${H}px`;
+  haze.style.webkitMaskPosition = haze.style.maskPosition = `${-photo.x}px ${-photo.y}px`;
+}
+function placeLightLeak() {
+  const r = rng(tornSeed ^ 0xa11ce), leak = $("leak");
+  // the leak element overhangs the page by 25% each side, so 30%/70% sit near the page's corners
+  leak.style.setProperty("--leak-x", r() < 0.5 ? "30%" : "70%");
+  leak.style.setProperty("--leak-y", r() < 0.6 ? "30%" : "70%");
+  leak.style.setProperty("--leak-dx", ((r() - 0.5) * 18).toFixed(1) + "%");
+  leak.style.setProperty("--leak-dy", ((r() - 0.5) * 14).toFixed(1) + "%");
+}
+
 function drawChrome() {
-  const cs = getComputedStyle($("mat")), mt = parseFloat(cs.borderTopWidth), mb = parseFloat(cs.borderBottomWidth), mx = parseFloat(cs.borderLeftWidth);
-  frameInset = mx;
-  penIn($("frame"), "frame", { width: 1.1, taper: 12, step: 4, breathe: 0.7 }).set(rectStrokes(mx, mt, window.innerWidth - 2 * mx, window.innerHeight - mt - mb, 3, 10, 2.6));
+  measurePhoto();
+  tornEdgeMask();
   drawTitleLine();
   drawMarks();
-  penIn($("stickRing"), "stick", { width: 0.9, className: "faint", taper: 8, breathe: 0.6 }).set([loopPts(48, 48, 41, 41, 7, { square: 2, wobble: 1.3, turns: 1.07 })]);
-  penIn($("knobRing"), "knob", { width: 1.05, taper: 4, step: 2, breathe: 0.4 }).set([loopPts(18, 18, 9, 9, 9, { square: 2, wobble: 0.6, turns: 1.18 })]);
-  penIn($("padBox"), "pad", { width: 0.75, className: "faint", taper: 6, breathe: 0.5 }).set(rectStrokes(4, 4, 252, 142, 5, 4, 1.1));
+  penIn($("stickRing"), "stick", { width: 0.9, className: "faint", taper: 8 }).set([loopPts(48, 48, 40, 40, 7)]);
+  penIn($("knobRing"), "knob", { width: 1.05, taper: 4, step: 2, wobble: 0.6 }).set([loopPts(18, 18, 9, 9, 9, { turns: 1.25 })]);
+  penIn($("padBox"), "pad", { width: 0.75, className: "faint", taper: 6, wobble: 0.6 }).set(rectStrokes(4, 4, 252, 142, 5, 4));
 }
-// on load the page is sketched in, one line after another: frame, title, then the buttons
+// on load the page is sketched in, one line after another: the title, then the words in the margins
 function sketchIn() {
   if (reducedMotion()) return;
-  const seq = [[lines.get("frame"), 430], [lines.get("title"), 170]];
-  document.querySelectorAll(".header-action, nav button").forEach((b) => seq.push([marks.get(b)?.line, 120, b]));
-  if ($("stick").offsetWidth) seq.push([lines.get("stick"), 200]);
-  let t = 60;
+  canvas.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 900, easing: "ease-out" });
+  const seq = [[lines.get("title"), 220, null]];
+  document.querySelectorAll(".margin button.mark").forEach((b) => { if (b.offsetWidth) seq.push([marks.get(b)?.line, 150, b]); });
+  if ($("stick").offsetWidth) seq.push([lines.get("stick"), 220, null]);
+  let t = 260;
+  for (const id of ["title", "pageDate", "seal"]) $(id).animate([{ opacity: 0 }, { opacity: 1 }], { duration: 300, delay: 60, fill: "backwards" });
   for (const [l, d, label] of seq) {
-    label?.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 160, delay: Math.max(0, t - 60), fill: "backwards" });
+    label?.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 160, delay: Math.max(0, t - 80), fill: "backwards" });
     l?.drawOn(t, d);
-    t += d * 0.82;
+    t += d * 0.8;
   }
-  for (const id of ["title", "pageDate", "seal"]) $(id).animate([{ opacity: 0 }, { opacity: 1 }], { duration: 260, delay: 380, fill: "backwards" });
 }
 
 // ---------- a tiny built-in page so the journal never opens empty: a cafe table drawn in splats ----------
@@ -186,6 +261,30 @@ function store(key, value) { try { localStorage.setItem("sj:" + key, JSON.string
 function restore(key) { try { return JSON.parse(localStorage.getItem("sj:" + key)); } catch (e) { return null; } }
 const save = () => store(page.key, page);
 
+// ---------- haze: far splats fade toward the colour of the paper, inside Spark's own shader ----------
+let viewDist = 2;
+function paperTone() {
+  const hex = getComputedStyle(document.documentElement).getPropertyValue("--paper").trim() || "#f6f2ea";
+  const c = new THREE.Color(hex);
+  return new THREE.Vector3(c.r, c.g, c.b);
+}
+function paperHaze(mesh, d) {
+  try {
+    const { dynoBlock, dynoFloat, dynoVec3, splitGsplat, combineGsplat, split, neg, mix, mul, smoothstep, Gsplat } = dyno;
+    const near = dynoFloat(d * 0.7), far = dynoFloat(d * 3.2), most = dynoFloat(0.42), tone = dynoVec3(paperTone());
+    mesh.enableWorldToView = true;
+    mesh.worldModifier = dynoBlock({ gsplat: Gsplat }, { gsplat: Gsplat }, ({ gsplat }) => {
+      const { center, rgb } = splitGsplat(gsplat).outputs;
+      const { z } = split(mesh.context.worldToView.apply(center)).outputs;
+      const amount = mul(smoothstep(near, far, neg(z)), most);
+      return { gsplat: combineGsplat({ gsplat, rgb: mix(rgb, tone, amount) }) };
+    });
+    mesh.updateGenerator();
+  } catch (err) {
+    console.warn("haze unavailable", err); // the scan still shows, just without distance haze
+  }
+}
+
 // ---------- loading a scan (= a page) ----------
 async function loadPage(source) {
   if (disposed) return;
@@ -198,7 +297,7 @@ async function loadPage(source) {
   page.notes.forEach(normalizeNoteStyle);
   page.doodles ||= [];
   $("pageDate").textContent = page.date;
-  $("title").textContent = page.title;
+  letterTitle();
   $("notes").innerHTML = "";
   $("ink").innerHTML = "";
 
@@ -210,12 +309,15 @@ async function loadPage(source) {
   camera.position.fromArray(source.start || [0, 0, 3]);
   controls.target.fromArray(source.target || [0, 0, 0]);
   camera.lookAt(controls.target);
+  // the distance you first see the place from: bubbles are life-size there, and the haze is measured from it
+  viewDist = Math.max(0.2, camera.position.distanceTo(controls.target));
   syncLookFromCamera();
   vel.set(0, 0, 0); glide.set(0, 0, 0);
 
   try {
     await nextSplat.initialized;
     if (disposed || splat !== nextSplat) return;
+    paperHaze(nextSplat, viewDist);
     setStatus("");
     page.notes.forEach((n) => makeNoteEl(n));
     inkDirty = true;
@@ -242,6 +344,8 @@ $("fileInput").onchange = async (e) => {
 };
 $("flipBtn").onclick = () => { page.flipped = !page.flipped; applyFlip(); save(); };
 $("title").addEventListener("input", () => { page.title = $("title").textContent.trim(); save(); }, { signal: lifecycle.signal });
+$("title").addEventListener("focus", () => { $("title").textContent = page.title; }, { signal: lifecycle.signal });
+$("title").addEventListener("blur", letterTitle, { signal: lifecycle.signal });
 $("title").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); e.target.blur(); } }, { signal: lifecycle.signal });
 
 // ---------- tools ----------
@@ -315,7 +419,7 @@ let lastInkKey = "";
 const pv = new THREE.Vector3();
 function renderInk() {
   if (!splat) return;
-  const key = camera.matrixWorld.elements.join();
+  const key = camera.matrixWorld.elements.join() + camera.zoom;
   if (!inkDirty && key === lastInkKey) return;
   lastInkKey = key; inkDirty = false;
   const W = window.innerWidth, H = window.innerHeight;
@@ -357,7 +461,7 @@ function setTab(mode) {
 }
 function drawSlip() {
   const s = $("slip");
-  penIn($("slipBox"), "slip", { width: 1.1, taper: 10, breathe: 0.7 }).set(rectStrokes(3, 3, s.offsetWidth - 6, s.offsetHeight - 6, 12, 8, 1.6));
+  penIn($("slipBox"), "slip", { width: 1.1, taper: 10 }).set(rectStrokes(3, 3, s.offsetWidth - 6, s.offsetHeight - 6, 12, 8));
   drawMarks(true);
 }
 const padInkOf = (pts, i) => inkOutline(pts, 1.7, { seed: i * 17 + 3, step: 1.6, taper: 7, pressure: 0.32 });
@@ -439,23 +543,20 @@ $("tearBtn").onclick = () => {
   save(); closeEditor();
 };
 
-// ---------- notes: floating bubbles, projected from 3D every frame ----------
+// ---------- notes: bubbles that live in the room, projected from 3D every frame ----------
+//
+// Each note has an anchor A on the scan. Its bubble sits at B, a little above A,
+// and drifts a few centimetres on its own slow path in world space, so turning
+// your head moves the drift with the room. The trail of small circles rises from
+// A to B in 3D. Size follows perspective, far bubbles soften, near ones sharpen.
+let soapId = 0;
 function makeNoteEl(note, fresh = false) {
   const el = document.createElement("div");
   normalizeNoteStyle(note);
   el.className = "note";
   el.innerHTML = '<svg class="trail"></svg><div class="dot"></div><div class="bob"><div class="card"><svg class="bub"></svg><span class="c"></span></div></div>';
-  const seed = hash(note.id);
-  const trail = el.querySelector(".trail");
-  trail.setAttribute("viewBox", "0 0 42 52");
-  trail.setAttribute("preserveAspectRatio", "none");
+  const seed = hash(note.id), r = rng(seed);
   el.dataset.seed = String(seed >>> 0);
-  // each bubble drifts on its own slow path
-  const r = rng(seed), bob = el.querySelector(".bob"), px = () => ((r() - 0.5) * 7).toFixed(1) + "px";
-  bob.style.setProperty("--d", (-(seed >>> 0) % 9000) + "ms");
-  bob.style.setProperty("--dur", (13 + r() * 9).toFixed(1) + "s");
-  for (const k of ["x1", "y1", "x2", "y2", "x3", "y3"]) bob.style.setProperty("--" + k, px());
-  bob.style.setProperty("--tilt", ((r() - 0.5) * 1.6).toFixed(2) + "deg");
   const card = el.querySelector(".card");
   card.setAttribute("role", "button");
   card.setAttribute("tabindex", "0");
@@ -465,6 +566,11 @@ function makeNoteEl(note, fresh = false) {
   };
   $("notes").appendChild(el);
   Object.defineProperty(note, "el", { value: el, enumerable: false, writable: true }); // keep el out of saved JSON
+  // its own slow path through the air: periods, phases and a sideways lean for the trail
+  Object.defineProperty(note, "air", {
+    enumerable: false, writable: true,
+    value: { tx: 13 + r() * 8, ty: 15 + r() * 7, tz: 17 + r() * 6, px: r() * 6.283, py: r() * 6.283, pz: r() * 6.283, lean: r() * 6.283 },
+  });
   drawNote(note, fresh);
 }
 function drawNote(note, sketch = false) {
@@ -475,8 +581,8 @@ function drawNote(note, sketch = false) {
     for (const s of note.strokes) for (const [x, y] of s) { x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x); y1 = Math.max(y1, y); }
     const m = 4, w = Math.max(x1 - x0, 10) + 2 * m, h = Math.max(y1 - y0, 10) + 2 * m, k = 0.62;
     const s = svgEl("svg", { viewBox: `${x0 - m} ${y0 - m} ${w} ${h}`, width: f1(w * k), height: f1(h * k) });
-    // drawn as ink: each stroke swells and thins like a real nib (widths are in pad units, shown at k)
-    note.strokes.forEach((st, i) => s.appendChild(svgEl("path", { d: inkOutline(st, 2.5, { seed: seed + i * 17, step: 1.6, taper: 9, pressure: 0.34 }) })));
+    // drawn as ink: each stroke lands, swells and thins like a real nib (widths are in pad units, shown at k)
+    note.strokes.forEach((st, i) => s.appendChild(svgEl("path", { d: inkOutline(st, 2.5, { seed: seed + i * 17, step: 1.6, taper: 9, pressure: 0.34, blob: 3 }) })));
     c.appendChild(s);
   } else c.textContent = note.text;
 
@@ -491,39 +597,46 @@ function drawNote(note, sketch = false) {
   Object.defineProperty(el, "_pens", { value: pens, configurable: true, writable: true });
   const trail = el.querySelector(".trail");
   trail.innerHTML = "";
-  delete trail.dataset.flex;
-  el._trailLine = null; el._dots = [];
+  el._trailLine = null; el._dots = []; el._trailKey = "";
   if (note.style === "line") {
-    trail.appendChild(svgEl("path", { class: "trail-echo", d: "" }));
-    el._trailLine = new PenLine(trail, { width: 1.1, taper: 6, step: 2, breathe: 0.5 });
+    el._trailLine = new PenLine(trail, { width: 1.1, taper: 6, step: 2, wobble: 0.7 });
     pens.push(el._trailLine);
   } else {
-    // three small circles, each a pen loop of its own, from the anchor up to the bubble
-    [[8, 46, 1.6], [12, 31, 2.4], [17, 12, 3.3]].forEach(([cx, cy, rr], i) => {
-      const g = svgEl("g", { class: "thought-dot", transform: `translate(${cx} ${cy})` });
+    // three small circles, each a pen loop of its own, rising from the anchor to the bubble
+    [[0.3, 1.6], [0.57, 2.3], [0.84, 3.1]].forEach(([at, rr], i) => {
+      const g = svgEl("g", { class: "thought-dot" });
       g.appendChild(svgEl("circle", { class: "dot-fill", r: rr }));
       trail.appendChild(g);
-      const l = new PenLine(g, { width: 0.85, taper: 1.5, step: 1, breathe: 0.25, pressure: 0.2 })
-        .set([loopPts(0, 0, rr, rr, seed + 31 * i, { square: 2, wobble: 0.22, turns: 1.16 })]);
+      const l = new PenLine(g, { width: 0.85, taper: 1.5, step: 1, pressure: 0.2, wobble: 0.5, hook: false, breathe: 0.2 })
+        .set([loopPts(0, 0, rr, rr, seed + 31 * i, { turns: 1.2, flat: 0.08 })]);
       pens.push(l);
-      el._dots.push({ g, cx, cy, l });
+      el._dots.push({ g, at, l });
     });
   }
-  updateNoteSketch(note);
 
   const bub = el.querySelector(".bub");
   const w = card.offsetWidth, h = card.offsetHeight;
-  el.dataset.unsized = w ? "" : "1";
-  el.dataset.w = String(w + 24); // laid out while hidden: draw again once it is on screen
+  el.dataset.unsized = w ? "" : "1"; // laid out while hidden: draw again once it is on screen
+  el.dataset.w = String(w);
   bub.setAttribute("width", w); bub.setAttribute("height", h);
   bub.innerHTML = "";
-  let outline = null, fill = null;
+  let outline = null, body = null;
   if (note.style !== "line" && w) {
-    // a loose oval round the words, wider than tall: a thought, not a label
-    const loop = loopPts(w / 2, h / 2, w / 2 + 9, h / 2 + 6, seed + 9, { square: 2.35, wobble: 1.5, turns: 1.09 });
-    fill = svgEl("path", { class: "bub-fill", d: openCurve(loop) + "Z" });
-    bub.appendChild(fill);
-    outline = new PenLine(bub, { width: 1.15, taper: 9, step: 3 }).set([loop]);
+    // a loose oval round the words with room to spare, so the text never touches the edge
+    const cx = w / 2, cy = h / 2, rx = w / 2 + 11, ry = h / 2 + 9;
+    const loop = loopPts(cx, cy, rx, ry, seed + 9, { square: 2.35, flat: 0.06 + (seed % 7) / 100 });
+    // the body of a soap bubble: barely there, a little brighter where the light catches it
+    const id = `soap-${++soapId}`;
+    const grad = svgEl("radialGradient", { id, cx: "36%", cy: "30%", r: "78%" });
+    grad.append(svgEl("stop", { offset: "0", class: "soap-light" }), svgEl("stop", { offset: "0.62", class: "soap-mid" }), svgEl("stop", { offset: "1", class: "soap-edge" }));
+    const defs = svgEl("defs"); defs.appendChild(grad);
+    body = svgEl("g", { class: "bub-body" });
+    body.appendChild(svgEl("path", { class: "bub-fill", d: openCurve(loop) + "Z", fill: `url(#${id})` }));
+    const glint = [];
+    for (let a = 198; a <= 246; a += 6) glint.push([cx + Math.cos(a * Math.PI / 180) * rx * 0.8, cy + Math.sin(a * Math.PI / 180) * ry * 0.7]);
+    body.appendChild(svgEl("path", { class: "soap-glint", d: openCurve(glint) }));
+    bub.append(defs, body);
+    outline = new PenLine(bub, { width: 1.15, taper: 9, step: 2.5 }).set([loop]);
     pens.push(outline);
   }
 
@@ -533,84 +646,91 @@ function drawNote(note, sketch = false) {
   dot.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 140, delay: 20, fill: "backwards" });
   let textAt;
   if (note.style === "line") {
+    el._trailKey = "";
+    placeNote(note);
     el._trailLine.drawOn(110, 380);
     textAt = 470;
   } else {
     el._dots.forEach((d, i) => d.l.drawOn(120 + i * 110, 140));
     el._dots.forEach((d, i) => d.g.querySelector(".dot-fill").animate([{ opacity: 0 }, { opacity: 1 }], { duration: 140, delay: 120 + i * 110, fill: "backwards" }));
     outline?.drawOn(460, 460);
-    fill?.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 420, delay: 480, fill: "backwards" });
+    body?.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 420, delay: 480, fill: "backwards" });
     textAt = 880;
   }
   c.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 280, delay: textAt, easing: "ease-out", fill: "backwards" });
 }
 
-const v = new THREE.Vector3();
-const previousCameraPosition = new THREE.Vector3();
-const previousCameraQuaternion = new THREE.Quaternion();
-let cameraPoseReady = false, cameraInkMotion = 0;
-function updateCameraInkMotion(dt) {
-  if (!cameraPoseReady) {
-    previousCameraPosition.copy(camera.position);
-    previousCameraQuaternion.copy(camera.quaternion);
-    cameraPoseReady = true;
-    return;
+const v = new THREE.Vector3(), worldA = new THREE.Vector3(), worldB = new THREE.Vector3(), worldP = new THREE.Vector3(), lean = new THREE.Vector3();
+let airTime = 0;
+const toScreen = (p) => { worldP.copy(p).project(camera); return [(worldP.x + 1) / 2 * window.innerWidth, (1 - worldP.y) / 2 * window.innerHeight, worldP.z]; };
+// perspective size, relative to the first view; a short screen shows the room smaller, so its bubbles shrink a little too
+const lifeSize = (dist) => Math.min(1.4, Math.max(0.55, (viewDist / Math.max(dist, 1e-3)) * Math.min(1.05, Math.sqrt(window.innerHeight / 760))));
+function placeNote(n) {
+  const el = n.el, air = n.air;
+  worldA.fromArray(n.p); splat.localToWorld(worldA);
+  const [ax, ay, az] = toScreen(worldA);
+  const inside = ax > photo.x + 4 && ax < photo.x + photo.w - 4 && ay > photo.y + 4 && ay < photo.y + photo.h - 4;
+  const visible = az > -1 && az < 1 && inside;
+  el.style.display = visible ? "" : "none";
+  if (!visible) return;
+  if (el.dataset.unsized) drawNote(n);
+
+  // B: a bubble's height above the anchor (about 60 px at the first view), plus its drift
+  const rise = viewDist * 0.085, sway = reducedMotion() ? 0 : viewDist * 0.012, t = airTime;
+  worldB.copy(worldA);
+  worldB.y += (n.style === "line" ? 0.5 : 1) * rise + sway * 1.3 * Math.sin((t / air.ty) * 6.283 + air.py);
+  worldB.x += sway * Math.sin((t / air.tx) * 6.283 + air.px);
+  worldB.z += sway * 0.8 * Math.sin((t / air.tz) * 6.283 + air.pz);
+  const dist = worldB.distanceTo(camera.position), s = lifeSize(dist);
+  let [bx, by] = toScreen(worldB);
+  bx -= ax; by -= ay;
+
+  // keep the bubble on the page: lean it back if it would run off the side
+  const w = (Number(el.dataset.w) || 0) * s, x0 = (n.style === "line" ? 22 : -30) * s, left = ax + bx + x0, right = left + w + (n.style === "line" ? 0 : 20 * s);
+  if (right > window.innerWidth - 8) bx -= right - (window.innerWidth - 8);
+  else if (left < 8) bx += 8 - left;
+
+  el.style.transform = `translate(${f1(ax)}px, ${f1(ay)}px)`;
+  el.style.zIndex = String(10000 - Math.round(dist * 100)); // nearer notes on top
+  el.querySelector(".bob").style.transform = `translate(${f1(bx)}px, ${f1(by)}px) scale(${s.toFixed(3)})`;
+  el.querySelector(".dot").style.scale = Math.max(0.7, s).toFixed(2);
+
+  // depth of field: far bubbles soften and pale, near ones are crisp; very near ones brighten, as if they noticed you
+  const far = Math.min(1, Math.max(0, (dist - viewDist * 1.1) / (viewDist * 1.4)));
+  const near = Math.min(1, Math.max(0, (0.6 - dist) / 0.35));
+  const look = `${(far * 1.5).toFixed(1)}:${(1 - far * 0.32).toFixed(2)}:${near.toFixed(2)}`;
+  if (el.dataset.look !== look) {
+    el.dataset.look = look;
+    el.style.filter = far > 0.04 ? `blur(${(far * 1.5).toFixed(1)}px)` : near > 0 ? `brightness(${(1 + near * 0.05).toFixed(3)}) contrast(${(1 + near * 0.06).toFixed(3)})` : "";
+    el.style.opacity = (1 - far * 0.32).toFixed(2);
+    el.style.setProperty("--near", near.toFixed(2));
   }
-  const travel = camera.position.distanceTo(previousCameraPosition);
-  const turn = 2 * Math.acos(Math.min(1, Math.abs(camera.quaternion.dot(previousCameraQuaternion))));
-  previousCameraPosition.copy(camera.position);
-  previousCameraQuaternion.copy(camera.quaternion);
-  if (reducedMotion()) { cameraInkMotion = 0; return; }
-  const speed = Math.min(1, travel / Math.max(dt, 0.001) * 0.8 + turn / Math.max(dt, 0.001) * 1.5);
-  const easing = 1 - Math.exp(-dt * (speed > cameraInkMotion ? 12 : 3.4));
-  cameraInkMotion += (speed - cameraInkMotion) * easing;
-}
-function updateNoteSketch(note) {
-  const trail = note.el.querySelector(".trail");
-  const seed = Number(note.el.dataset.seed) || 0;
-  const phase = (seed % 997) / 997 * Math.PI * 2;
-  const pose = camera.rotation.y * 2.6 + camera.rotation.x * 1.7 + camera.position.x * 1.1 + camera.position.z * 0.8 + phase;
-  const sway = cameraInkMotion * Math.sin(pose) * 1.7;
-  const lift = cameraInkMotion * Math.cos(pose * 0.73 + 0.5) * 1.2;
-  if (cameraInkMotion > 0.07) note.el.classList.add("moving");
-  else if (cameraInkMotion < 0.025) note.el.classList.remove("moving");
-  const flexKey = `${sway.toFixed(1)}:${lift.toFixed(1)}`;
-  if (trail.dataset.flex === flexKey) return;
-  trail.dataset.flex = flexKey;
-  if (note.style === "line") {
-    const points = [[4, 51], [11 + sway * 0.12, 44 - lift * 0.12], [19 + sway * 0.62, 35 + lift * 0.32], [29 - sway * 0.4, 28 + lift * 0.35], [38, 26]];
-    const echoPoints = points.map(([x, y], i) => [x + (i > 0 && i < 4 ? 0.65 : 0), y + (i > 0 && i < 4 ? 0.65 : 0)]);
-    note.el._trailLine?.set([points]);
-    trail.querySelector(".trail-echo")?.setAttribute("d", openCurve(echoPoints));
+
+  if (n.style === "line") {
+    // the line leans up and out from the anchor to where the words begin
+    const ex = bx + 22 * s, ey = by, len = Math.hypot(ex, ey) || 1, side = Math.cos(air.lean) < 0 ? -1 : 1;
+    const key = `${Math.round(ex)}:${Math.round(ey)}`;
+    if (el._trailKey !== key) {
+      el._trailKey = key;
+      const nx = -ey / len, ny = ex / len, pts = [0, 0.3, 0.6, 1].map((u) => [ex * u + nx * Math.sin(u * Math.PI) * len * 0.12 * side, ey * u + ny * Math.sin(u * Math.PI) * len * 0.12 * side]);
+      el._trailLine?.set([pts]);
+    }
   } else {
-    (note.el._dots || []).forEach((d, i) => {
-      const scale = (i + 1) / 3;
-      d.g.setAttribute("transform", `translate(${f1(d.cx + sway * scale * 0.55)} ${f1(d.cy - lift * scale * 0.42)})`);
-    });
+    // the circles rise in 3D, each a little further from the anchor, each sized by its own depth
+    lean.set(Math.cos(air.lean), 0, Math.sin(air.lean)).multiplyScalar(rise * 0.12);
+    for (const d of el._dots || []) {
+      worldP.copy(worldA).lerp(worldB, d.at).addScaledVector(lean, Math.sin(d.at * Math.PI));
+      const ds = lifeSize(worldP.distanceTo(camera.position));
+      const [dx, dy] = toScreen(worldP);
+      d.g.setAttribute("transform", `translate(${f1(dx - ax)} ${f1(dy - ay)}) scale(${ds.toFixed(2)})`);
+    }
   }
 }
-function placeNotes() {
+function placeNotes(dt) {
   if (!splat) return;
+  if (!reducedMotion()) airTime += dt;
   splat.updateMatrixWorld();
-  for (const n of page.notes) {
-    if (!n.el) continue;
-    v.fromArray(n.p);
-    splat.localToWorld(v);
-    const dist = v.distanceTo(camera.position);
-    v.project(camera);
-    const visible = v.z > -1 && v.z < 1 && Math.abs(v.x) < 1.15 && Math.abs(v.y) < 1.15;
-    n.el.style.display = visible ? "" : "none";
-    if (!visible) continue;
-    if (n.el.dataset.unsized) drawNote(n);
-    const sx = (v.x + 1) / 2 * window.innerWidth;
-    n.el.style.transform = `translate(${sx}px, ${(1 - v.y) / 2 * window.innerHeight}px)`;
-    // a bubble that would run past the frame's right edge leans back inside it
-    const room = window.innerWidth - frameInset - sx - 6, need = Number(n.el.dataset.w) || 0;
-    const shift = room < need ? Math.max(room - need, -(sx - frameInset - 12)) : 0;
-    if (n.el.dataset.shift !== String(Math.round(shift))) { n.el.dataset.shift = String(Math.round(shift)); n.el.style.setProperty("--shift", Math.round(shift) + "px"); }
-    n.el.style.zIndex = String(10000 - Math.round(dist * 100)); // nearer notes on top
-    updateNoteSketch(n);
-  }
+  for (const n of page.notes) if (n.el) placeNote(n);
 }
 
 // ---------- float mode: drift through the scan ----------
@@ -739,20 +859,30 @@ function updateFloat(dt) {
 
 // ---------- start ----------
 setFloat(true);
+placeLightLeak();
 drawChrome();
 sketchIn();
 keepSketching(lifecycle.signal);
 $("title").addEventListener("input", drawTitleLine, { signal: lifecycle.signal });
+// renaming happens in plain text: the hand-lettered spans come back when you are done
+$("title").addEventListener("focus", () => {
+  const t = $("title"), sel = window.getSelection(), r = document.createRange();
+  r.selectNodeContents(t); r.collapse(false); sel?.removeAllRanges(); sel?.addRange(r);
+}, { signal: lifecycle.signal });
 document.fonts?.ready.then(() => { if (disposed) return; drawChrome(); page.notes.forEach((n) => n.el && drawNote(n)); }); // lettering changes sizes once the pen font arrives
 
 const clock = new THREE.Clock();
+let breath = 0;
 renderer.setAnimationLoop(() => {
   const dt = Math.min(clock.getDelta(), 0.1);
   if (floatMode) updateFloat(dt); else controls.update();
+  // the whole scan breathes: about 1% in and out over 8 s (still under reduced motion)
+  breath += dt;
+  const zoom = reducedMotion() ? 1 : 1 + 0.005 * Math.sin((breath / 8) * Math.PI * 2);
+  if (camera.zoom !== zoom) { camera.zoom = zoom; camera.updateProjectionMatrix(); }
   camera.updateMatrixWorld();
-  updateCameraInkMotion(dt);
   renderer.render(scene, camera);
-  placeNotes();
+  placeNotes(dt);
   renderInk();
 });
 
