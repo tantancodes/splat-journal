@@ -9,6 +9,7 @@ import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { SparkRenderer, SplatMesh } from "@sparkjsdev/spark";
 import { normalizeNoteStyle } from "./note-style.js";
+import { PenLine, rng, hash, f1, openCurve, loopPts, linePts, rectStrokes, inkOutline, keepSketching, reducedMotion } from "./pen";
 
 type Vec3 = [number, number, number];
 interface Note { id: string; p: Vec3; text: string; strokes: number[][][] | null; style?: "thought" | "line"; el?: HTMLElement }
@@ -24,64 +25,86 @@ let disposed = false;
 const NS = "http://www.w3.org/2000/svg";
 const svgEl = (tag, attrs = {}) => { const e = document.createElementNS(NS, tag); for (const k in attrs) e.setAttribute(k, attrs[k]); return e; };
 
-// ---------- pen: every line in the interface is generated to look drawn by hand ----------
-const rng = (a) => () => { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; };
-const hash = (str) => { let h = 2166136261; for (const c of String(str)) h = Math.imul(h ^ c.charCodeAt(0), 16777619); return h; };
-const f1 = (n) => n.toFixed(1);
-
-function openCurve(p) { // smooth curve through points (Catmull-Rom)
-  let d = `M${f1(p[0][0])} ${f1(p[0][1])}`;
-  for (let i = 0; i < p.length - 1; i++) {
-    const p0 = p[Math.max(i - 1, 0)], p1 = p[i], p2 = p[i + 1], p3 = p[Math.min(i + 2, p.length - 1)];
-    d += `C${f1(p1[0] + (p2[0] - p0[0]) / 6)} ${f1(p1[1] + (p2[1] - p0[1]) / 6)} ${f1(p2[0] - (p3[0] - p1[0]) / 6)} ${f1(p2[1] - (p3[1] - p1[1]) / 6)} ${f1(p2[0])} ${f1(p2[1])}`;
-  }
-  return d;
-}
-// a loop the way a pen draws one: a little more than one turn, never quite meeting itself
-function penLoop(cx, cy, rx, ry, seed, { square = 2.4, wobble = 1.2, turns = 1.1 } = {}) {
-  const r = rng(seed), n = 18, a0 = -Math.PI * (0.55 + r() * 0.3), steps = Math.ceil(n * turns), pts = [];
-  for (let i = 0; i <= steps; i++) {
-    const a = a0 + (i / n) * Math.PI * 2, c = Math.cos(a), s = Math.sin(a), drift = 1 + (i / steps - 0.5) * 0.06;
-    pts.push([cx + Math.sign(c) * Math.pow(Math.abs(c), 2 / square) * rx * drift + (r() - 0.5) * wobble * 2,
-              cy + Math.sign(s) * Math.pow(Math.abs(s), 2 / square) * ry * drift + (r() - 0.5) * wobble * 2]);
-  }
-  return openCurve(pts);
-}
-// a box drawn as four separate strokes that overshoot the corners
-function penRect(x, y, w, h, seed, over = 6, wob = 1.6) {
-  const r = rng(seed), j = () => (r() - 0.5) * wob, o = () => over * (0.3 + r());
-  const line = (x1, y1, x2, y2) => { const pts = []; for (let i = 0; i <= 3; i++) { const t = i / 3; pts.push([x1 + (x2 - x1) * t + j(), y1 + (y2 - y1) * t + j()]); } return openCurve(pts); };
-  return line(x - o(), y, x + w + o(), y) + line(x + w, y - o(), x + w, y + h + o()) + line(x + w + o(), y + h, x - o(), y + h) + line(x, y + h + o(), x, y - o());
-}
-// a freehand stroke, lightly smoothed
-function inkPath(p) {
-  if (p.length === 1) return `M${f1(p[0][0])} ${f1(p[0][1])}l0.1 0`;
-  let d = `M${f1(p[0][0])} ${f1(p[0][1])}`;
-  for (let i = 1; i < p.length - 1; i++) d += `Q${f1(p[i][0])} ${f1(p[i][1])} ${f1((p[i][0] + p[i + 1][0]) / 2)} ${f1((p[i][1] + p[i + 1][1]) / 2)}`;
-  const l = p[p.length - 1];
-  return d + `L${f1(l[0])} ${f1(l[1])}`;
+// ---------- chrome: every line in the interface is drawn by the pen (see pen.ts) ----------
+const lines = new Map();      // name -> PenLine for the fixed pieces of chrome
+const marks = new WeakMap();  // button -> { line, key }
+function penIn(host, name, opts) {
+  let l = lines.get(name);
+  if (!l || l.g.parentNode !== host) { l?.dispose(); l = new PenLine(host, opts); lines.set(name, l); }
+  return l;
 }
 
+// where a button's label actually sits, relative to the button
+function labelBox(b) {
+  const t = [...b.childNodes].find((n) => n.nodeType === 3 && n.textContent.trim());
+  const br = b.getBoundingClientRect();
+  if (!t) return { x: 6, y: br.height / 2 - 6, w: br.width - 12, h: 12 };
+  const r = document.createRange(); r.selectNodeContents(t);
+  const tr = r.getBoundingClientRect();
+  return { x: tr.left - br.left, y: tr.top - br.top, w: tr.width, h: tr.height };
+}
+// what mark a button wears in its current state: a loop drawn round it, an underline, or nothing
+function markOf(b) {
+  const on = b.classList.contains("on");
+  if (b.closest("nav")) return on ? "loop" : "faint";
+  if (b.classList.contains("style-picker")) return on ? "loop" : "";
+  if (b.closest(".tabs")) return on ? "under" : "";
+  if (b.id === "saveBtn") return "loop";
+  return "faint";
+}
+function drawMarks(animate = false) {
+  document.querySelectorAll("button.mark").forEach((b, i) => {
+    if (!b.offsetWidth) return; // hidden for now; drawn when it shows
+    let m = marks.get(b);
+    if (!m) {
+      const host = svgEl("svg", { class: "mark-ink", "aria-hidden": "true" });
+      b.appendChild(host);
+      m = { host, line: null, key: "" };
+      marks.set(b, m);
+    }
+    const kind = markOf(b), box = labelBox(b), key = `${kind}:${Math.round(box.x)}:${Math.round(box.y)}:${Math.round(box.w)}`;
+    if (m.key === key) return;
+    const kindChanged = m.key.split(":")[0] !== kind;
+    m.key = key;
+    if (!m.line || kindChanged) { m.line?.dispose(); m.line = kind ? new PenLine(m.host, { width: kind === "faint" ? 0.8 : 1.1, className: kind === "faint" ? "faint" : "", taper: 5, step: 2.5, breathe: 0.5 }) : null; }
+    if (!m.line) return;
+    const seed = 40 + i * 13 + (kind === "loop" ? 5 : 0);
+    if (kind === "loop") m.line.set([loopPts(box.x + box.w / 2, box.y + box.h / 2 + 0.5, box.w / 2 + 10, box.h / 2 + 7, seed, { square: 2.1, wobble: 0.9, turns: 1.13 })]);
+    else m.line.set([linePts(box.x - 2, box.y + box.h + 2.5, box.x + box.w + 3, box.y + box.h + 1.5, seed, 0.6)]);
+    if (animate && kindChanged) m.line.drawOn(0, kind === "loop" ? 300 : 180);
+  });
+}
+function drawTitleLine() {
+  const t = $("title"), host = $("titleLine");
+  let w = 112;
+  if (t.textContent.trim()) { const r = document.createRange(); r.selectNodeContents(t); w = Math.min(r.getBoundingClientRect().width, t.offsetWidth); }
+  const y = t.offsetTop + t.offsetHeight + 1;
+  penIn(host, "title", { width: 1.05, taper: 6, breathe: 0.6 }).set([linePts(-3, y + 0.5, w + 7, y - 0.8, 17, 0.8)]);
+}
+let frameInset = 0;
 function drawChrome() {
   const cs = getComputedStyle($("mat")), mt = parseFloat(cs.borderTopWidth), mb = parseFloat(cs.borderBottomWidth), mx = parseFloat(cs.borderLeftWidth);
-  $("framePath").setAttribute("d", penRect(mx, mt, window.innerWidth - 2 * mx, window.innerHeight - mt - mb, 3, 7, 2));
-  $("framePath").setAttribute("pathLength", "1");
-  document.querySelectorAll("nav button, #saveBtn").forEach((b, i) => {
-    let s = b.querySelector("svg.sketch-outline");
-    if (!s) { s = svgEl("svg", { class: "sketch-outline", "aria-hidden": "true" }); s.appendChild(svgEl("path", { class: "pen", pathLength: "1" })); b.appendChild(s); }
-    const w = b.offsetWidth, h = b.offsetHeight;
-    if (w) {
-      s.setAttribute("viewBox", `0 0 ${w} ${h}`);
-      s.setAttribute("preserveAspectRatio", "none");
-      const isTool = b.closest("nav");
-      s.firstChild.setAttribute("d", isTool
-        ? penLoop(w / 2, 17, Math.min(15, w / 2 - 3), 12, 20 + i, { square: 2.2, wobble: 0.9 })
-        : penLoop(w / 2, h / 2 + 1, w / 2 - 3, Math.min(h / 2 - 5, 15), 20 + i, { square: 2.2, wobble: 1 }));
-    }
-  });
-  $("stickRing").setAttribute("d", penLoop(48, 48, 44, 44, 7, { square: 2, wobble: 1.4 }));
-  $("knobRing").setAttribute("d", penLoop(18, 18, 14, 14, 9, { square: 2, wobble: 0.8 }));
-  $("padBox").setAttribute("d", penRect(4, 4, 252, 142, 5, 0, 1.2));
+  frameInset = mx;
+  penIn($("frame"), "frame", { width: 1.1, taper: 12, step: 4, breathe: 0.7 }).set(rectStrokes(mx, mt, window.innerWidth - 2 * mx, window.innerHeight - mt - mb, 3, 10, 2.6));
+  drawTitleLine();
+  drawMarks();
+  penIn($("stickRing"), "stick", { width: 0.9, className: "faint", taper: 8, breathe: 0.6 }).set([loopPts(48, 48, 41, 41, 7, { square: 2, wobble: 1.3, turns: 1.07 })]);
+  penIn($("knobRing"), "knob", { width: 1.05, taper: 4, step: 2, breathe: 0.4 }).set([loopPts(18, 18, 9, 9, 9, { square: 2, wobble: 0.6, turns: 1.18 })]);
+  penIn($("padBox"), "pad", { width: 0.75, className: "faint", taper: 6, breathe: 0.5 }).set(rectStrokes(4, 4, 252, 142, 5, 4, 1.1));
+}
+// on load the page is sketched in, one line after another: frame, title, then the buttons
+function sketchIn() {
+  if (reducedMotion()) return;
+  const seq = [[lines.get("frame"), 430], [lines.get("title"), 170]];
+  document.querySelectorAll(".header-action, nav button").forEach((b) => seq.push([marks.get(b)?.line, 120, b]));
+  if ($("stick").offsetWidth) seq.push([lines.get("stick"), 200]);
+  let t = 60;
+  for (const [l, d, label] of seq) {
+    label?.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 160, delay: Math.max(0, t - 60), fill: "backwards" });
+    l?.drawOn(t, d);
+    t += d * 0.82;
+  }
+  for (const id of ["title", "pageDate", "seal"]) $(id).animate([{ opacity: 0 }, { opacity: 1 }], { duration: 260, delay: 380, fill: "backwards" });
 }
 
 // ---------- a tiny built-in page so the journal never opens empty: a cafe table drawn in splats ----------
@@ -232,6 +255,7 @@ function setTool(t) {
   $("hint").textContent = tool === "note" ? "tap a spot to leave a note" : (isTouch ? "one finger draws, two move" : "drag to draw on the scene");
   $("hint").classList.toggle("show", !!tool);
   $("undoBtn").classList.toggle("show", tool === "draw");
+  drawMarks(true);
 }
 $("noteBtn").onclick = () => setTool("note");
 $("drawBtn").onclick = () => setTool("draw");
@@ -295,7 +319,7 @@ function renderInk() {
   if (!inkDirty && key === lastInkKey) return;
   lastInkKey = key; inkDirty = false;
   const W = window.innerWidth, H = window.innerHeight;
-  for (const s of page.doodles) {
+  page.doodles.forEach((s, si) => {
     if (!s.el) { Object.defineProperty(s, "el", { value: svgEl("path"), enumerable: false, writable: true }); $("ink").appendChild(s.el); }
     const out = []; let ok = s.pts.length > 0, dist = 1;
     for (let i = 0; i < s.pts.length && ok; i++) {
@@ -305,10 +329,10 @@ function renderInk() {
       if (pv.z > 1 || pv.z < -1) ok = false; else out.push([(pv.x + 1) / 2 * W, (1 - pv.y) / 2 * H]);
     }
     s.el.style.display = ok ? "" : "none";
-    if (!ok) continue;
-    s.el.setAttribute("d", inkPath(out));
-    s.el.setAttribute("stroke-width", Math.min(9, Math.max(0.5, 1.7 * s.d / dist)).toFixed(2)); // nearer ink looks thicker
-  }
+    if (!ok) return;
+    const w = Math.min(9, Math.max(0.5, 1.9 * s.d / dist)); // nearer ink looks thicker
+    s.el.setAttribute("d", inkOutline(out, w, { seed: si * 31 + 7, step: 2, taper: 4 + w * 3, pressure: 0.28 }));
+  });
 }
 
 // ---------- note editor ----------
@@ -319,6 +343,7 @@ function setNoteStyle(style) {
   $("styleLine").classList.toggle("on", noteStyle === "line");
   $("styleThought").setAttribute("aria-pressed", String(noteStyle === "thought"));
   $("styleLine").setAttribute("aria-pressed", String(noteStyle === "line"));
+  drawMarks(true);
 }
 function setTab(mode) {
   editMode = mode;
@@ -332,13 +357,13 @@ function setTab(mode) {
 }
 function drawSlip() {
   const s = $("slip");
-  $("slipPath").setAttribute("d", penRect(1, 1, s.offsetWidth - 2, s.offsetHeight - 2, 12, 8, 1.8));
-  $("slipPath").setAttribute("pathLength", "1");
-  drawChrome();
+  penIn($("slipBox"), "slip", { width: 1.1, taper: 10, breathe: 0.7 }).set(rectStrokes(3, 3, s.offsetWidth - 6, s.offsetHeight - 6, 12, 8, 1.6));
+  drawMarks(true);
 }
+const padInkOf = (pts, i) => inkOutline(pts, 1.7, { seed: i * 17 + 3, step: 1.6, taper: 7, pressure: 0.32 });
 function redrawPad() {
   $("padInk").innerHTML = "";
-  padStrokes.forEach((st) => $("padInk").appendChild(svgEl("path", { d: inkPath(st) })));
+  padStrokes.forEach((st, i) => $("padInk").appendChild(svgEl("path", { d: padInkOf(st, i) })));
   $("padGhost").style.display = padStrokes.length || padCur ? "none" : "";
 }
 $("tabWrite").onclick = () => setTab("write");
@@ -354,12 +379,12 @@ pad.addEventListener("pointerdown", (e) => {
   padCur = { id: e.pointerId, pts: [padPt(e)], el: svgEl("path") };
   $("padGhost").style.display = "none";
   $("padInk").appendChild(padCur.el);
-  padCur.el.setAttribute("d", inkPath(padCur.pts));
+  padCur.el.setAttribute("d", padInkOf(padCur.pts, padStrokes.length));
 }, { signal: lifecycle.signal });
 pad.addEventListener("pointermove", (e) => {
   if (!padCur || e.pointerId !== padCur.id) return;
   padCur.pts.push(padPt(e));
-  padCur.el.setAttribute("d", inkPath(padCur.pts));
+  padCur.el.setAttribute("d", padInkOf(padCur.pts, padStrokes.length));
 }, { signal: lifecycle.signal });
 const padEnd = (e) => { if (padCur && e.pointerId === padCur.id) { padStrokes.push(padCur.pts); padCur = null; } };
 pad.addEventListener("pointerup", padEnd, { signal: lifecycle.signal });
@@ -377,6 +402,8 @@ function openEditor(target) {
   $("editor").classList.add("open");
   redrawPad();
   setTab(n?.strokes?.length ? "draw" : editMode);
+  drawChrome();
+  lines.get("slip")?.drawOn(0, 460);
 }
 function closeEditor() {
   const returnFocus = editing?.note?.el?.isConnected ? editing.note.el.querySelector(".card") : $("noteBtn");
@@ -416,14 +443,19 @@ $("tearBtn").onclick = () => {
 function makeNoteEl(note, fresh = false) {
   const el = document.createElement("div");
   normalizeNoteStyle(note);
-  el.className = "note" + (fresh ? " fresh" : "");
+  el.className = "note";
   el.innerHTML = '<svg class="trail"></svg><div class="dot"></div><div class="bob"><div class="card"><svg class="bub"></svg><span class="c"></span></div></div>';
   const seed = hash(note.id);
   const trail = el.querySelector(".trail");
   trail.setAttribute("viewBox", "0 0 42 52");
   trail.setAttribute("preserveAspectRatio", "none");
   el.dataset.seed = String(seed >>> 0);
-  el.querySelector(".bob").style.setProperty("--d", (-(seed >>> 0) % 5500) + "ms");
+  // each bubble drifts on its own slow path
+  const r = rng(seed), bob = el.querySelector(".bob"), px = () => ((r() - 0.5) * 7).toFixed(1) + "px";
+  bob.style.setProperty("--d", (-(seed >>> 0) % 9000) + "ms");
+  bob.style.setProperty("--dur", (13 + r() * 9).toFixed(1) + "s");
+  for (const k of ["x1", "y1", "x2", "y2", "x3", "y3"]) bob.style.setProperty("--" + k, px());
+  bob.style.setProperty("--tilt", ((r() - 0.5) * 1.6).toFixed(2) + "deg");
   const card = el.querySelector(".card");
   card.setAttribute("role", "button");
   card.setAttribute("tabindex", "0");
@@ -433,18 +465,18 @@ function makeNoteEl(note, fresh = false) {
   };
   $("notes").appendChild(el);
   Object.defineProperty(note, "el", { value: el, enumerable: false, writable: true }); // keep el out of saved JSON
-  drawNote(note);
-  if (fresh) setTimeout(() => el.classList.remove("fresh"), 1100);
+  drawNote(note, fresh);
 }
-function drawNote(note, reanimate = false) {
-  const el = note.el, c = el.querySelector(".c");
+function drawNote(note, sketch = false) {
+  const el = note.el, c = el.querySelector(".c"), seed = hash(note.id);
   c.innerHTML = "";
   if (note.strokes?.length) {
     let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
     for (const s of note.strokes) for (const [x, y] of s) { x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x); y1 = Math.max(y1, y); }
     const m = 4, w = Math.max(x1 - x0, 10) + 2 * m, h = Math.max(y1 - y0, 10) + 2 * m, k = 0.62;
     const s = svgEl("svg", { viewBox: `${x0 - m} ${y0 - m} ${w} ${h}`, width: f1(w * k), height: f1(h * k) });
-    note.strokes.forEach((st) => s.appendChild(svgEl("path", { d: inkPath(st) })));
+    // drawn as ink: each stroke swells and thins like a real nib (widths are in pad units, shown at k)
+    note.strokes.forEach((st, i) => s.appendChild(svgEl("path", { d: inkOutline(st, 2.5, { seed: seed + i * 17, step: 1.6, taper: 9, pressure: 0.34 }) })));
     c.appendChild(s);
   } else c.textContent = note.text;
 
@@ -452,35 +484,70 @@ function drawNote(note, reanimate = false) {
   card.setAttribute("aria-label", `${note.style === "line" ? "Edit line annotation" : "Edit thought bubble"}: ${note.strokes?.length ? "handwritten note" : note.text}`);
   el.classList.toggle("line", note.style === "line");
   el.classList.toggle("thought", note.style !== "line");
+
+  // the pen lines belonging to this note are rebuilt from scratch
+  (el._pens || []).forEach((p) => p.dispose());
+  const pens = [];
+  Object.defineProperty(el, "_pens", { value: pens, configurable: true, writable: true });
   const trail = el.querySelector(".trail");
   trail.innerHTML = "";
+  delete trail.dataset.flex;
+  el._trailLine = null; el._dots = [];
   if (note.style === "line") {
     trail.appendChild(svgEl("path", { class: "trail-echo", d: "" }));
-    trail.appendChild(svgEl("path", { class: "trail-line", pathLength: "1", d: "" }));
+    el._trailLine = new PenLine(trail, { width: 1.1, taper: 6, step: 2, breathe: 0.5 });
+    pens.push(el._trailLine);
   } else {
-    [[8, 46, 1.4], [12, 31, 2.2], [17, 12, 3.1]].forEach(([cx, cy, r], index) => {
-      trail.appendChild(svgEl("circle", { class: "thought-dot", "data-index": index, "data-cx": cx, "data-cy": cy, "data-r": r, cx, cy, r }));
+    // three small circles, each a pen loop of its own, from the anchor up to the bubble
+    [[8, 46, 1.6], [12, 31, 2.4], [17, 12, 3.3]].forEach(([cx, cy, rr], i) => {
+      const g = svgEl("g", { class: "thought-dot", transform: `translate(${cx} ${cy})` });
+      g.appendChild(svgEl("circle", { class: "dot-fill", r: rr }));
+      trail.appendChild(g);
+      const l = new PenLine(g, { width: 0.85, taper: 1.5, step: 1, breathe: 0.25, pressure: 0.2 })
+        .set([loopPts(0, 0, rr, rr, seed + 31 * i, { square: 2, wobble: 0.22, turns: 1.16 })]);
+      pens.push(l);
+      el._dots.push({ g, cx, cy, l });
     });
   }
+  updateNoteSketch(note);
+
   const bub = el.querySelector(".bub");
   const w = card.offsetWidth, h = card.offsetHeight;
+  el.dataset.unsized = w ? "" : "1";
+  el.dataset.w = String(w + 24); // laid out while hidden: draw again once it is on screen
   bub.setAttribute("width", w); bub.setAttribute("height", h);
   bub.innerHTML = "";
-  if (note.style !== "line") {
-    bub.appendChild(svgEl("path", { class: "pen filled", pathLength: "1", d: penLoop(w / 2, h / 2, w / 2 + 2, h / 2 + 2, hash(note.id) + 9, { square: 3, wobble: 1.3, turns: 1.08 }) }));
+  let outline = null, fill = null;
+  if (note.style !== "line" && w) {
+    // a loose oval round the words, wider than tall: a thought, not a label
+    const loop = loopPts(w / 2, h / 2, w / 2 + 9, h / 2 + 6, seed + 9, { square: 2.35, wobble: 1.5, turns: 1.09 });
+    fill = svgEl("path", { class: "bub-fill", d: openCurve(loop) + "Z" });
+    bub.appendChild(fill);
+    outline = new PenLine(bub, { width: 1.15, taper: 9, step: 3 }).set([loop]);
+    pens.push(outline);
   }
-  if (reanimate) {
-    el.classList.remove("fresh");
-    void el.offsetWidth;
-    el.classList.add("fresh");
-    setTimeout(() => el.classList.remove("fresh"), 1100);
+
+  if (!sketch || reducedMotion()) return;
+  // a fresh note is sketched in: anchor, the trail, the outline, then the words
+  const dot = el.querySelector(".dot");
+  dot.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 140, delay: 20, fill: "backwards" });
+  let textAt;
+  if (note.style === "line") {
+    el._trailLine.drawOn(110, 380);
+    textAt = 470;
+  } else {
+    el._dots.forEach((d, i) => d.l.drawOn(120 + i * 110, 140));
+    el._dots.forEach((d, i) => d.g.querySelector(".dot-fill").animate([{ opacity: 0 }, { opacity: 1 }], { duration: 140, delay: 120 + i * 110, fill: "backwards" }));
+    outline?.drawOn(460, 460);
+    fill?.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 420, delay: 480, fill: "backwards" });
+    textAt = 880;
   }
+  c.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 280, delay: textAt, easing: "ease-out", fill: "backwards" });
 }
 
 const v = new THREE.Vector3();
 const previousCameraPosition = new THREE.Vector3();
 const previousCameraQuaternion = new THREE.Quaternion();
-const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 let cameraPoseReady = false, cameraInkMotion = 0;
 function updateCameraInkMotion(dt) {
   if (!cameraPoseReady) {
@@ -493,7 +560,7 @@ function updateCameraInkMotion(dt) {
   const turn = 2 * Math.acos(Math.min(1, Math.abs(camera.quaternion.dot(previousCameraQuaternion))));
   previousCameraPosition.copy(camera.position);
   previousCameraQuaternion.copy(camera.quaternion);
-  if (reducedMotion) { cameraInkMotion = 0; return; }
+  if (reducedMotion()) { cameraInkMotion = 0; return; }
   const speed = Math.min(1, travel / Math.max(dt, 0.001) * 0.8 + turn / Math.max(dt, 0.001) * 1.5);
   const easing = 1 - Math.exp(-dt * (speed > cameraInkMotion ? 12 : 3.4));
   cameraInkMotion += (speed - cameraInkMotion) * easing;
@@ -513,15 +580,12 @@ function updateNoteSketch(note) {
   if (note.style === "line") {
     const points = [[4, 51], [11 + sway * 0.12, 44 - lift * 0.12], [19 + sway * 0.62, 35 + lift * 0.32], [29 - sway * 0.4, 28 + lift * 0.35], [38, 26]];
     const echoPoints = points.map(([x, y], i) => [x + (i > 0 && i < 4 ? 0.65 : 0), y + (i > 0 && i < 4 ? 0.65 : 0)]);
-    trail.querySelector(".trail-line").setAttribute("d", openCurve(points));
-    trail.querySelector(".trail-echo").setAttribute("d", openCurve(echoPoints));
+    note.el._trailLine?.set([points]);
+    trail.querySelector(".trail-echo")?.setAttribute("d", openCurve(echoPoints));
   } else {
-    trail.querySelectorAll(".thought-dot").forEach((dot, i) => {
+    (note.el._dots || []).forEach((d, i) => {
       const scale = (i + 1) / 3;
-      const x = Number(dot.dataset.cx) + sway * scale * 0.55;
-      const y = Number(dot.dataset.cy) - lift * scale * 0.42;
-      dot.setAttribute("cx", x.toFixed(1));
-      dot.setAttribute("cy", y.toFixed(1));
+      d.g.setAttribute("transform", `translate(${f1(d.cx + sway * scale * 0.55)} ${f1(d.cy - lift * scale * 0.42)})`);
     });
   }
 }
@@ -537,7 +601,13 @@ function placeNotes() {
     const visible = v.z > -1 && v.z < 1 && Math.abs(v.x) < 1.15 && Math.abs(v.y) < 1.15;
     n.el.style.display = visible ? "" : "none";
     if (!visible) continue;
-    n.el.style.transform = `translate(${(v.x + 1) / 2 * window.innerWidth}px, ${(1 - v.y) / 2 * window.innerHeight}px)`;
+    if (n.el.dataset.unsized) drawNote(n);
+    const sx = (v.x + 1) / 2 * window.innerWidth;
+    n.el.style.transform = `translate(${sx}px, ${(1 - v.y) / 2 * window.innerHeight}px)`;
+    // a bubble that would run past the frame's right edge leans back inside it
+    const room = window.innerWidth - frameInset - sx - 6, need = Number(n.el.dataset.w) || 0;
+    const shift = room < need ? Math.max(room - need, -(sx - frameInset - 12)) : 0;
+    if (n.el.dataset.shift !== String(Math.round(shift))) { n.el.dataset.shift = String(Math.round(shift)); n.el.style.setProperty("--shift", Math.round(shift) + "px"); }
     n.el.style.zIndex = String(10000 - Math.round(dist * 100)); // nearer notes on top
     updateNoteSketch(n);
   }
@@ -567,6 +637,7 @@ function setFloat(on) {
     ? (isTouch ? "drag to look · stick to float · pinch to glide" : "drag to look · wasd to float · q e down up · scroll to glide")
     : (isTouch ? "drag to spin · pinch to zoom" : "drag to spin · scroll to zoom");
   controls.enabled = !on && tool !== "draw";
+  drawMarks(true);
   if (on) { syncLookFromCamera(); vel.set(0, 0, 0); glide.set(0, 0, 0); }
   else {
     // spin around whatever is about 1.5 units in front of you
@@ -667,8 +738,11 @@ function updateFloat(dt) {
 }
 
 // ---------- start ----------
-drawChrome();
 setFloat(true);
+drawChrome();
+sketchIn();
+keepSketching(lifecycle.signal);
+$("title").addEventListener("input", drawTitleLine, { signal: lifecycle.signal });
 document.fonts?.ready.then(() => { if (disposed) return; drawChrome(); page.notes.forEach((n) => n.el && drawNote(n)); }); // lettering changes sizes once the pen font arrives
 
 const clock = new THREE.Clock();

@@ -1,19 +1,43 @@
 :root {
   color-scheme: light;
-  --paper: #f5f1e8;
-  --paper-deep: #e9e3d7;
-  --ink: #302e2b;
-  --pencil: #817b72;
-  --vermilion: #b94b42;
-  --ui: "Avenir Next", Avenir, "Helvetica Neue", sans-serif;
-  --hand: "Zen Kurenaido", "Bradley Hand", "Segoe Print", "Apple Chancery", cursive;
+
+  /* paper and ink: the seal is the only colour on the page */
+  --paper: #f6f2ea;
+  --paper-veil: rgba(246, 242, 234, 0.62);
+  --ink: #2a2825;
+  --ink-soft: rgba(42, 40, 37, 0.78);
+  --pencil: #8b857b;
+  --pencil-faint: rgba(139, 133, 123, 0.62);
+  --seal: #b63f2f;
+
+  /* a very faint fibre: fine grain plus long, sparse wisps (SVG noise, no image file) */
+  --fibre: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='420' height='420'%3E%3Cfilter id='g' x='0' y='0'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' seed='3' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0.42 0 0 0 0 0.37 0 0 0 0 0.29 0.5 0 0 0 -0.22'/%3E%3C/filter%3E%3Cfilter id='f' x='0' y='0'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.045 0.016' numOctaves='5' seed='8' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0.45 0 0 0 0 0.39 0 0 0 0 0.3 0.42 0 0 0 -0.25'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23g)'/%3E%3Crect width='100%25' height='100%25' filter='url(%23f)'/%3E%3C/svg%3E");
+  --fibre-size: 420px;
+  --halo: 0 0 2px var(--paper), 0 0 6px var(--paper), 0 0 12px rgba(246, 242, 234, 0.9);
+
+  /* type: a pen for titles and notes, pencil marginalia for everything else */
+  --hand: "Zen Kurenaido", "Bradley Hand", "Segoe Print", cursive;
+  --margin: Avenir, "Avenir Next", "Helvetica Neue", system-ui, sans-serif;
+  --margin-weight: 300;
+  --margin-size: 10.5px;
+  --margin-track: 0.22em;
+  --title-size: clamp(24px, 2.6vw, 34px);
+  --note-size: 19px;
+
+  /* touch and motion */
+  --tap: 44px;
+  --ease-pen: cubic-bezier(.35, .1, .3, 1);
+
+  /* the page: the scan sits like a photo pasted in, with paper all round */
   --safe-top: env(safe-area-inset-top, 0px);
   --safe-right: env(safe-area-inset-right, 0px);
   --safe-bottom: env(safe-area-inset-bottom, 0px);
   --safe-left: env(safe-area-inset-left, 0px);
-  --mx: calc(var(--safe-left) + clamp(14px, 2.2vw, 30px));
-  --mt: calc(var(--safe-top) + clamp(52px, 8vh, 78px));
-  --mb: calc(var(--safe-bottom) + clamp(72px, 11vh, 104px));
+  --mx: calc(max(var(--safe-left), var(--safe-right)) + clamp(30px, 6vw, 96px));
+  --mt: calc(var(--safe-top) + clamp(92px, 13vh, 128px));
+  --mb: calc(var(--safe-bottom) + clamp(96px, 14vh, 136px));
+  --head-top: calc(var(--safe-top) + clamp(20px, 3.4vh, 38px));
+  --nav-bottom: calc(var(--safe-bottom) + clamp(16px, 3.4vh, 38px));
 }
 
 * { box-sizing: border-box; }
@@ -22,78 +46,81 @@ html, body, #root { width: 100%; height: 100%; margin: 0; }
 
 html, body {
   overflow: hidden;
-  background-color: var(--paper);
-  background-image:
-    linear-gradient(rgba(245, 241, 232, 0.68), rgba(245, 241, 232, 0.68)),
-    url("/design_ref/papertexture.avif");
-  background-size: auto, 740px auto;
-  background-repeat: repeat;
+  background: var(--fibre) 0 0 / var(--fibre-size) repeat, var(--paper);
   color: var(--ink);
-  font: 400 14px/1.4 var(--ui);
+  font: var(--margin-weight) var(--margin-size)/1.5 var(--margin);
+  letter-spacing: var(--margin-track);
   -webkit-user-select: none;
   user-select: none;
   -webkit-tap-highlight-color: transparent;
   overscroll-behavior: none;
 }
 
-button, textarea { font: inherit; color: inherit; }
-button { border: 0; padding: 0; background: none; cursor: pointer; }
-button:focus-visible, #title:focus-visible, textarea:focus-visible {
-  outline: 1px dashed var(--ink);
+button, textarea { font: inherit; letter-spacing: inherit; color: inherit; }
+button { border: 0; padding: 0; background: none; cursor: pointer; touch-action: manipulation; }
+button:focus-visible, #title:focus-visible, textarea:focus-visible, .card:focus-visible {
+  outline: 1px dashed var(--pencil);
   outline-offset: 3px;
 }
 svg { overflow: visible; }
-.pen { fill: none; stroke: var(--ink); stroke-width: 1.25; stroke-linecap: round; stroke-linejoin: round; }
-.pen.filled { fill: var(--paper); }
-.control-icon, .tool-icon { fill: none; stroke: currentColor; stroke-width: 1.35; stroke-linecap: round; stroke-linejoin: round; }
+
+/* every pen line is a filled, pressure-varied outline; its colour comes from where it sits */
+.penline { color: var(--ink-soft); }
+.penline.faint { color: var(--pencil-faint); }
+.ink-body { fill: currentColor; stroke: none; }
 
 .journal-viewer { position: fixed; inset: 0; isolation: isolate; }
-.journal-viewer::after {
-  content: "";
-  position: fixed;
-  inset: auto 0 0;
-  z-index: 38;
-  height: clamp(70px, 14vh, 118px);
-  pointer-events: none;
-  background: linear-gradient(0deg, rgba(245, 241, 232, 0.76), rgba(245, 241, 232, 0));
-}
 #stage canvas { position: fixed; inset: 0; z-index: 0; display: block; width: 100%; height: 100%; touch-action: none; }
 
-/* Handwriting and scene doodles stay in their own projection layers. */
+/* handwriting and scene doodles stay in their own projection layers */
 #ink { position: fixed; inset: 0; z-index: 39; width: 100%; height: 100%; pointer-events: none; }
-#ink path { fill: none; stroke: var(--ink); stroke-linecap: round; stroke-linejoin: round; }
+#ink path { fill: var(--ink); stroke: none; }
+
+/* ---------- notes ---------- */
 #notes { position: fixed; inset: 0; z-index: 40; pointer-events: none; }
 .note { position: absolute; left: 0; top: 0; will-change: transform; }
-.dot { position: absolute; left: -3px; top: -3px; z-index: 3; width: 6px; height: 6px; border-radius: 50%; background: var(--vermilion); box-shadow: 0 0 0 2px rgba(245, 241, 232, 0.78); }
-.trail { position: absolute; left: -5px; top: -52px; z-index: 0; width: 42px; height: 52px; overflow: visible; pointer-events: none; }
-.trail-line, .trail-echo { fill: none; stroke: rgba(48, 46, 43, 0.72); stroke-width: 1.05; stroke-linecap: round; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
-.trail-echo { stroke: rgba(48, 46, 43, 0.35); stroke-width: 0.82; opacity: 0; transition: opacity 220ms ease; }
-.note.moving .trail-echo { opacity: 0.18; }
-.thought-dot { fill: var(--paper); stroke: rgba(48, 46, 43, 0.76); stroke-width: 0.9; vector-effect: non-scaling-stroke; transform-box: fill-box; transform-origin: center; }
-.bob { position: absolute; left: 0; top: 0; z-index: 2; animation: bob 11s ease-in-out infinite; animation-delay: var(--d, 0s); }
-@keyframes bob { 0%, 100% { translate: 0 0; } 50% { translate: 0.35px -1.1px; } }
+.dot { position: absolute; left: -2.5px; top: -2.5px; z-index: 3; width: 5px; height: 5px; border-radius: 50%; background: var(--ink); }
+.trail { position: absolute; left: -5px; top: -52px; z-index: 0; width: 42px; height: 52px; pointer-events: none; }
+.trail .penline { color: var(--ink-soft); }
+.dot-fill { fill: var(--paper); }
+.trail-echo { fill: none; stroke: var(--pencil-faint); stroke-width: 0.8; stroke-linecap: round; opacity: 0; transition: opacity 220ms ease; }
+.note.moving .trail-echo { opacity: 0.4; }
+
+/* a bubble drifts on its own slow path, a few px at most */
+.bob {
+  position: absolute; left: 0; top: 0; z-index: 2;
+  animation: drift var(--dur, 15s) ease-in-out infinite;
+  animation-delay: var(--d, 0s);
+}
+@keyframes drift {
+  0%, 100% { translate: 0 0; rotate: 0deg; }
+  25% { translate: var(--x1, 1px) var(--y1, -2px); rotate: var(--tilt, 0.4deg); }
+  50% { translate: var(--x2, -1px) var(--y2, -1px); rotate: 0deg; }
+  75% { translate: var(--x3, 1px) var(--y3, 1px); rotate: calc(var(--tilt, 0.4deg) * -1); }
+}
 .card {
   position: absolute;
   left: 5px;
-  bottom: 50px;
+  bottom: 57px;
   isolation: isolate;
   pointer-events: auto;
   cursor: pointer;
   width: max-content;
   min-width: 48px;
   max-width: min(210px, 58vw);
-  padding: 10px 16px 12px;
+  padding: 12px 18px 14px;
   color: var(--ink);
-  font: 400 19px/1.28 var(--hand);
+  font: 400 var(--note-size)/1.28 var(--hand);
   letter-spacing: 0.025em;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   text-align: center;
-  -webkit-user-select: none;
-  user-select: none;
+  text-transform: lowercase;
+  translate: var(--shift, 0px) 0;
+  transition: translate 300ms ease-out;
 }
-.bub { position: absolute; left: 0; top: 0; z-index: -1; overflow: visible; }
-.bub path { fill: rgba(245, 241, 232, 0.95); stroke: rgba(48, 46, 43, 0.78); stroke-width: 1.05; stroke-linecap: round; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
+.bub { position: absolute; left: 0; top: 0; z-index: -1; }
+.bub-fill { fill: var(--paper); fill-opacity: 0.94; }
 .note.line .bub { display: none; }
 .note.line .card {
   left: 35px;
@@ -104,44 +131,21 @@ svg { overflow: visible; }
   max-width: min(220px, 54vw);
   padding: 2px 5px;
   text-align: left;
-  background: transparent;
-  font-size: 18px;
-  text-shadow: 0 1px 2px rgba(245, 241, 232, 0.96), 0 0 5px rgba(245, 241, 232, 0.88);
+  font-size: calc(var(--note-size) - 1px);
+  text-shadow: var(--halo);
 }
-.note.line .c { text-align: left; }
-.note.line .c svg { margin: 0; }
-.note.line .trail-echo { opacity: 0; }
-.note.line.moving .trail-echo { opacity: 0.18; }
 .c { display: block; }
 .c svg { display: block; margin: 0 auto; }
-.c svg path, #padInk path { fill: none; stroke: var(--ink); stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
-.note.fresh .dot { opacity: 0; animation: anchor-appear 140ms ease-out 30ms forwards; }
-.note.fresh.thought .thought-dot { opacity: 0; transform: scale(0.2); animation: dot-pop 180ms cubic-bezier(.2,.7,.25,1) forwards; }
-.note.fresh.thought .thought-dot:nth-of-type(1) { animation-delay: 170ms; }
-.note.fresh.thought .thought-dot:nth-of-type(2) { animation-delay: 260ms; }
-.note.fresh.thought .thought-dot:nth-of-type(3) { animation-delay: 350ms; }
-.note.fresh.line .trail-line { stroke-dasharray: 1; stroke-dashoffset: 1; animation: sketch-line 460ms cubic-bezier(.2,.7,.25,1) 145ms forwards; }
-.note.fresh.thought .bub path { fill-opacity: 0; stroke-dasharray: 1; stroke-dashoffset: 1; animation: sketch-in 560ms cubic-bezier(.2,.7,.25,1) 440ms forwards; }
-.note.fresh .c { opacity: 0; animation: content-in 240ms ease-out 850ms forwards; }
-.note.fresh.line .c { animation-delay: 570ms; }
-@keyframes anchor-appear { to { opacity: 1; } }
-@keyframes dot-pop { to { opacity: 1; transform: scale(1); } }
-@keyframes sketch-line { to { stroke-dashoffset: 0; } }
-@keyframes content-in { to { opacity: 1; } }
-@keyframes sketch-in { 70% { fill-opacity: 0; } to { fill-opacity: 0.95; stroke-dashoffset: 0; } }
+.note.line .c svg { margin: 0; }
+.c svg path, #padInk path { fill: var(--ink); stroke: none; }
 
-/* The mat is only a narrow paper edge; the canvas itself remains nearly full-bleed. */
+/* ---------- the page: paper margin, frame, header ---------- */
 #mat { position: fixed; inset: 0; z-index: 45; pointer-events: none; border-style: solid; border-color: transparent; border-width: var(--mt) var(--mx) var(--mb); }
 #mat::before {
   content: "";
   position: fixed;
   inset: 0;
-  z-index: 0;
-  pointer-events: none;
-  background-color: var(--paper);
-  background-image: linear-gradient(rgba(245, 241, 232, 0.56), rgba(245, 241, 232, 0.56)), url("/design_ref/papertexture.avif");
-  background-size: auto, 740px auto;
-  background-repeat: repeat;
+  background: var(--fibre) 0 0 / var(--fibre-size) repeat, var(--paper);
   -webkit-mask: linear-gradient(#000 0 0) top / 100% var(--mt) no-repeat,
     linear-gradient(#000 0 0) bottom / 100% var(--mb) no-repeat,
     linear-gradient(#000 0 0) left / var(--mx) 100% no-repeat,
@@ -152,72 +156,62 @@ svg { overflow: visible; }
     linear-gradient(#000 0 0) right / var(--mx) 100% no-repeat;
 }
 #frame { position: fixed; inset: 0; z-index: 46; width: 100%; height: 100%; pointer-events: none; }
-#framePath { stroke: rgba(48, 46, 43, 0.48); stroke-width: 0.95; stroke-dasharray: 1; stroke-dashoffset: 1; animation: sketch-in 1.25s cubic-bezier(.2,.7,.25,1) 120ms forwards; }
 
 .journal-header {
   position: fixed;
-  top: calc(var(--safe-top) + clamp(8px, 1.8vh, 16px));
-  left: calc(var(--safe-left) + clamp(15px, 2vw, 29px));
-  right: calc(var(--safe-right) + clamp(15px, 2vw, 29px));
+  top: var(--head-top);
+  left: calc(var(--mx) - 2px);
+  right: calc(var(--mx) - 12px);
   z-index: 60;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
-  gap: 10px;
-  min-height: 50px;
-  padding: 2px 0 7px;
+  gap: 12px;
   pointer-events: none;
-  background: linear-gradient(180deg, rgba(245, 241, 232, 0.94), rgba(245, 241, 232, 0.62) 64%, transparent);
 }
-.header-story { display: flex; align-items: center; min-width: 0; gap: 8px; pointer-events: auto; }
-#seal {
-  flex: none;
-  display: grid;
-  place-items: center;
-  width: 21px;
-  height: 21px;
-  border-radius: 3px 4px 3px 2px;
-  background: var(--vermilion);
-  color: var(--paper);
-  font: 500 9px/1 var(--ui);
-  letter-spacing: 0.08em;
-  transform: rotate(-5deg);
-  filter: url(#rough);
-}
-.head-text { display: flex; flex-direction: column; min-width: 0; gap: 0; }
+.header-story { display: flex; min-width: 0; pointer-events: auto; }
+.head-text { position: relative; display: flex; flex-direction: column; align-items: flex-start; min-width: 0; }
 #title {
   display: block;
   min-width: 0;
-  max-width: min(46vw, 480px);
+  max-width: min(54vw, 520px);
   overflow: hidden;
   outline: none;
   color: var(--ink);
-  font: 400 clamp(23px, 2.7vw, 34px)/1.02 var(--hand);
-  letter-spacing: 0.012em;
+  font: 400 var(--title-size)/1.08 var(--hand);
+  letter-spacing: 0.02em;
   text-overflow: ellipsis;
+  text-transform: lowercase;
   white-space: nowrap;
   -webkit-user-select: text;
   user-select: text;
 }
 #title:empty::before { content: "untitled place"; color: var(--pencil); }
-#pageDate { color: var(--pencil); font: 500 9px/1.35 var(--ui); letter-spacing: 0.14em; text-transform: uppercase; }
-.header-actions { display: flex; align-items: center; gap: 2px; pointer-events: auto; }
-.header-action {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 5px;
-  min-width: 44px;
-  min-height: 44px;
-  padding: 5px 8px;
-  color: var(--ink);
-  font: 500 9px/1 var(--ui);
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  transition: color 180ms ease, background-color 180ms ease;
+#titleLine { position: absolute; left: 0; top: 0; width: 1px; height: 1px; pointer-events: none; }
+.dateline { display: flex; align-items: center; gap: 10px; margin-top: 9px; padding-left: 1px; }
+#pageDate { color: var(--pencil); white-space: nowrap; }
+#seal {
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  width: 17px;
+  height: 18px;
+  background: var(--seal);
+  color: var(--paper);
+  font: 400 8px/1 var(--margin);
+  letter-spacing: 0;
+  transform: rotate(-4deg);
+  filter: url(#rough);
+  opacity: 0.92;
 }
-.header-action:hover { color: var(--vermilion); }
-.header-action .control-icon { width: 19px; height: 19px; }
+.header-actions { display: flex; align-items: center; pointer-events: auto; margin-top: -6px; }
+
+/* every button reads as a pencilled word; its edge, if any, is a pen mark drawn in by the engine */
+button.mark, .actions button, .chip { position: relative; min-width: var(--tap); min-height: var(--tap); }
+button.mark { display: inline-grid; place-items: center; padding: 0 calc(10px - var(--margin-track) / 2) 0 calc(10px + var(--margin-track) / 2); color: var(--ink); transition: color 200ms ease; }
+.mark-ink { position: absolute; left: 0; top: 0; width: 1px; height: 1px; pointer-events: none; }
+.mark-ink .penline { color: var(--ink-soft); }
+.mark-ink .penline.faint { color: var(--pencil-faint); }
 
 #status {
   position: fixed;
@@ -227,113 +221,63 @@ svg { overflow: visible; }
   z-index: 44;
   transform: translateY(-50%);
   color: var(--pencil);
-  font: 500 10px/1.4 var(--ui);
-  letter-spacing: 0.18em;
   text-align: center;
-  text-transform: uppercase;
   pointer-events: none;
   transition: opacity 350ms ease;
 }
 #hint {
   position: fixed;
   left: 50%;
-  bottom: calc(var(--safe-bottom) + 77px);
+  bottom: calc(var(--nav-bottom) + var(--tap) + 10px);
   z-index: 62;
-  max-width: min(86vw, 400px);
-  padding: 7px 12px 8px;
+  width: max-content;
+  max-width: min(86vw, 420px);
   transform: translateX(-50%);
-  border-bottom: 1px solid rgba(48, 46, 43, 0.4);
-  background: rgba(245, 241, 232, 0.92);
-  color: var(--ink);
-  font: 500 10px/1.3 var(--ui);
-  letter-spacing: 0.06em;
+  color: var(--pencil);
   text-align: center;
-  white-space: normal;
   opacity: 0;
   pointer-events: none;
-  transition: opacity 220ms ease;
+  transition: opacity 260ms ease;
 }
 #hint.show { opacity: 1; }
 #help {
   position: fixed;
-  left: calc(var(--safe-left) + 22px);
-  bottom: calc(var(--safe-bottom) + 83px);
+  left: var(--mx);
+  bottom: calc(var(--mb) - 34px);
   z-index: 48;
-  max-width: 230px;
-  color: rgba(48, 46, 43, 0.66);
-  font: 500 9px/1.5 var(--ui);
-  letter-spacing: 0.07em;
+  max-width: calc(50vw - var(--mx) - 150px);
+  color: var(--pencil);
   pointer-events: none;
 }
 #undoBtn {
   position: fixed;
-  right: calc(var(--safe-right) + 22px);
-  bottom: calc(var(--mb) + 70px);
+  right: calc(var(--mx) + 6px);
+  bottom: calc(var(--mb) + 6px);
   z-index: 58;
   display: none;
-  align-items: center;
-  gap: 6px;
-  min-width: 44px;
-  min-height: 44px;
-  padding: 6px 8px;
-  border-bottom: 1px solid rgba(48, 46, 43, 0.42);
-  background: rgba(245, 241, 232, 0.7);
-  color: var(--ink);
-  font: 500 9px/1 var(--ui);
-  letter-spacing: 0.11em;
-  text-transform: uppercase;
+  text-shadow: var(--halo);
 }
-#undoBtn.show { display: inline-flex; }
-#undoBtn .control-icon { width: 16px; height: 16px; }
+#undoBtn.show { display: inline-grid; }
 
 nav {
   position: fixed;
-  left: auto;
-  right: calc(var(--safe-right) + clamp(12px, 2vw, 24px));
-  bottom: calc(var(--mb) + 8px);
+  left: 50%;
+  bottom: var(--nav-bottom);
   z-index: 60;
   display: flex;
   align-items: center;
-  justify-content: center;
-  width: max-content;
-  max-width: calc(100vw - var(--safe-left) - var(--safe-right) - 22px);
-  min-height: 54px;
-  gap: clamp(0px, 0.7vw, 6px);
-  padding: 0;
+  gap: clamp(4px, 2vw, 18px);
+  transform: translateX(-50%);
   pointer-events: auto;
 }
-nav::before {
-  content: none;
-}
-nav button {
-  position: relative;
-  display: flex;
-  flex: 0 0 64px;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 3px;
-  min-width: 56px;
-  min-height: 48px;
-  padding: 4px 6px;
-  color: rgba(48, 46, 43, 0.72);
-  font: 500 9px/1.1 var(--ui);
-  letter-spacing: 0.09em;
-  text-transform: uppercase;
-  transition: color 180ms ease, transform 180ms ease;
-  touch-action: manipulation;
-}
-nav button.on { color: var(--ink); }
-nav button:active { transform: translateY(1px); }
-nav button .tool-icon { display: block; width: 18px; height: 18px; }
-nav button .sketch-outline { position: absolute; inset: 1px 0; width: 100%; height: 100%; opacity: 0; pointer-events: none; transition: opacity 180ms ease; }
-nav button.on .sketch-outline { opacity: 0.88; }
-nav button.on .sketch-outline path { stroke: var(--vermilion); stroke-width: 1.05; stroke-dasharray: 1; stroke-dashoffset: 1; animation: sketch-in 460ms cubic-bezier(.2,.7,.25,1) forwards; }
+nav button.mark { min-width: 76px; color: var(--pencil); }
+nav button.mark.on { color: var(--ink); }
 
+/* the joystick is a pencil circle with a small inked one inside */
 #stick {
   position: fixed;
-  left: calc(var(--safe-left) + clamp(14px, 2vw, 24px));
-  bottom: calc(var(--safe-bottom) + 66px);
+  left: calc(var(--mx) + 10px);
+  bottom: calc(var(--mb) + 10px);
   z-index: 54;
   display: none;
   width: 96px;
@@ -341,13 +285,12 @@ nav button.on .sketch-outline path { stroke: var(--vermilion); stroke-width: 1.0
   touch-action: none;
 }
 #stick.show { display: block; }
-#stick > svg { position: absolute; inset: 0; width: 96px; height: 96px; }
-#stick > svg path { stroke: rgba(48, 46, 43, 0.46); stroke-width: 0.9; }
+#stickRing { position: absolute; inset: 0; width: 96px; height: 96px; }
 #knob { position: absolute; left: 30px; top: 30px; width: 36px; height: 36px; }
-#knob svg { width: 36px; height: 36px; }
-#knob .filled { fill: rgba(245, 241, 232, 0.92); stroke: rgba(48, 46, 43, 0.72); }
+#knobRing { width: 36px; height: 36px; }
+#knobRing .penline { color: var(--ink-soft); }
 
-/* A quiet, paper-backed note slip that becomes a compact bottom sheet on phones. */
+/* ---------- note editor: a loose sheet laid on the page ---------- */
 #editor {
   position: fixed;
   inset: 0;
@@ -360,157 +303,95 @@ nav button.on .sketch-outline path { stroke: var(--vermilion); stroke-width: 1.0
   height: 100dvh;
   overflow-y: auto;
   padding: max(16px, var(--safe-top)) 16px max(16px, var(--safe-bottom));
-  background: rgba(39, 36, 31, 0.16);
-  -webkit-backdrop-filter: blur(2px);
-  backdrop-filter: blur(2px);
+  background: var(--paper-veil);
 }
 #editor.open { display: flex; }
-#editor.open .slip { animation: slip-in 220ms ease-out both; }
-@keyframes slip-in { from { opacity: 0.94; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+#editor.open .slip { animation: slip-in 260ms ease-out both; }
+@keyframes slip-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
 .slip {
   position: relative;
-  width: min(390px, 92vw);
+  width: min(400px, 92vw);
   max-height: calc(100dvh - var(--safe-top) - var(--safe-bottom) - 28px);
   overflow-y: auto;
-  padding: 20px 22px 14px;
-  background-color: var(--paper);
-  background-image: linear-gradient(rgba(245, 241, 232, 0.5), rgba(245, 241, 232, 0.5)), url("/design_ref/papertexture.avif");
-  background-size: auto, 420px auto;
-  box-shadow: 0 8px 24px rgba(48, 46, 43, 0.06);
+  padding: 24px 24px 14px;
+  background: var(--fibre) 0 0 / var(--fibre-size) repeat, var(--paper);
   overscroll-behavior: contain;
 }
-.slip > svg.box { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
-#slipPath { stroke: rgba(48, 46, 43, 0.68); stroke-dasharray: 1; stroke-dashoffset: 1; }
-#editor.open #slipPath { animation: sketch-in 850ms cubic-bezier(.2,.7,.25,1) forwards; }
-.editor-kicker { margin-bottom: 8px; color: var(--pencil); font: 500 9px/1.3 var(--ui); letter-spacing: 0.15em; text-transform: uppercase; }
-.style-pickers { display: flex; align-items: center; gap: 5px; margin: 0 0 10px -5px; }
-.style-picker {
-  position: relative;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  min-width: 94px;
-  min-height: 44px;
-  padding: 4px 8px;
-  color: var(--pencil);
-  font: 500 9px/1 var(--ui);
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  transition: color 180ms ease, transform 180ms ease;
-  touch-action: manipulation;
-}
-.style-picker.on { color: var(--ink); }
-.style-picker.on::after {
-  content: "";
-  position: absolute;
-  inset: 3px 2px;
-  border: 1px solid rgba(185, 75, 66, 0.56);
-  border-radius: 48% 53% 46% 51%;
-  transform: rotate(-1.5deg);
-  pointer-events: none;
-}
-.style-picker:active { transform: translateY(1px); }
-.style-icon { width: 22px; height: 18px; overflow: visible; fill: none; stroke: currentColor; stroke-width: 1.1; stroke-linecap: round; stroke-linejoin: round; }
-.style-icon circle { fill: var(--paper); }
-.tabs { display: flex; gap: 17px; margin-bottom: 8px; }
-.tabs button {
-  min-height: 44px;
-  padding: 4px 1px;
-  border-bottom: 1px solid transparent;
-  color: var(--pencil);
-  font: 500 10px/1 var(--ui);
-  letter-spacing: 0.13em;
-  text-transform: uppercase;
-}
-.tabs button.on { border-bottom-color: var(--vermilion); color: var(--ink); }
+.slip > svg.box { position: absolute; left: 0; top: 0; width: 1px; height: 1px; pointer-events: none; }
+.editor-kicker { margin-bottom: 6px; color: var(--pencil); }
+.style-pickers, .tabs { display: flex; align-items: center; gap: 4px; margin-left: -10px; }
+.style-picker.mark, .tabs button.mark { color: var(--pencil); }
+.style-picker.mark.on, .tabs button.mark.on { color: var(--ink); }
+.tabs { margin-bottom: 6px; }
 #noteText {
   display: block;
   width: 100%;
-  height: 92px;
-  margin: 0 0 8px;
+  height: 96px;
+  margin: 0 0 6px;
   padding: 0;
   resize: none;
   border: 0;
   border-radius: 0;
   outline: none;
-  background: repeating-linear-gradient(transparent 0 29px, rgba(48, 46, 43, 0.13) 29px 30px);
+  background: transparent;
   color: var(--ink);
   font: 400 21px/30px var(--hand);
   letter-spacing: 0.015em;
   -webkit-user-select: text;
   user-select: text;
 }
-#noteText:focus-visible { outline: 1px dashed rgba(48, 46, 43, 0.76); outline-offset: 4px; }
-#noteText::placeholder { color: rgba(129, 123, 114, 0.85); }
-.chips { display: flex; flex-wrap: wrap; gap: 3px 13px; margin-bottom: 10px; }
-.chip { min-height: 38px; padding: 3px 1px; border-bottom: 1px dashed rgba(129, 123, 114, 0.7); color: var(--pencil); font: 400 15px/1 var(--hand); }
+#noteText::placeholder { color: var(--pencil-faint); }
+.chips { display: flex; flex-wrap: wrap; gap: 0 16px; margin-bottom: 6px; }
+.chip { padding: 0 2px; color: var(--pencil); font: 400 16px/1 var(--hand); letter-spacing: 0.02em; }
 #pad { display: none; width: 100%; aspect-ratio: 260 / 150; margin-bottom: 8px; touch-action: none; cursor: crosshair; }
 .draw #pad { display: block; }
 .draw #noteText, .draw .chips { display: none; }
-#padGhost { fill: var(--pencil); font: 400 12px var(--ui); letter-spacing: 0.08em; }
-.actions { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+#padGhost { fill: var(--pencil); font: var(--margin-weight) 10px var(--margin); letter-spacing: var(--margin-track); }
+.actions { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin: 0 -10px; }
 .actions > div { display: flex; align-items: center; gap: 2px; }
-.actions button { position: relative; min-width: 44px; min-height: 44px; padding: 7px 9px; font: 500 9px/1 var(--ui); letter-spacing: 0.12em; text-transform: uppercase; }
-#tearBtn { padding-left: 0; color: var(--vermilion); }
-#cancelBtn, #padUndo { color: var(--pencil); }
+.actions button { padding: 0 10px; }
+#tearBtn, #cancelBtn, #padUndo { color: var(--pencil); }
 #padUndo { display: none; }
 .draw #padUndo { display: block; }
-#saveBtn { color: var(--ink); }
-#saveBtn .sketch-outline { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
-#saveBtn .sketch-outline path { stroke: var(--vermilion); stroke-width: 1.1; }
+#saveBtn { color: var(--ink); min-width: 64px; }
 
 input[type="file"] { display: none; }
 
-@media (max-width: 560px) {
-  :root { --mx: calc(var(--safe-left) + 12px); }
-  .journal-header { left: calc(var(--safe-left) + 12px); right: calc(var(--safe-right) + 12px); }
-  #title { max-width: 42vw; font-size: clamp(20px, 5.6vw, 25px); }
-  .header-story { gap: 7px; }
-  #seal { width: 22px; height: 22px; font-size: 8px; }
-  .header-action { min-width: 48px; width: auto; gap: 3px; padding: 4px 5px; font-size: 9px; }
-  .header-action .control-icon { width: 16px; height: 16px; }
-  .header-action span { display: inline; }
-  #help { display: none; }
-  nav { min-height: 50px; }
-  nav button { flex-basis: 60px; min-width: 54px; min-height: 46px; padding-inline: 4px; }
-  #hint { bottom: calc(var(--safe-bottom) + 70px); }
-  #undoBtn { bottom: calc(var(--mb) + 66px); }
-  #stick { bottom: calc(var(--safe-bottom) + 66px); }
-}
-
-@media (orientation: portrait) {
-  :root { --mt: calc(var(--safe-top) + clamp(48px, 7.5vh, 68px)); --mb: calc(var(--safe-bottom) + clamp(72px, 9vh, 92px)); }
-  nav { left: 50%; right: auto; transform: translateX(-50%); }
-  #stick { bottom: calc(var(--mb) + 76px); }
-  #editor { align-items: flex-end; padding: 10px 10px max(8px, var(--safe-bottom)); }
-  .slip {
-    width: min(520px, 100%);
-    max-height: calc(100dvh - var(--safe-top) - 12px);
-    padding: 18px 20px max(14px, var(--safe-bottom));
-    border-radius: 0;
+/* ---------- phones, portrait ---------- */
+@media (orientation: portrait) and (max-width: 700px) {
+  :root {
+    --mx: calc(max(var(--safe-left), var(--safe-right)) + 22px);
+    --mt: calc(var(--safe-top) + 104px);
+    --mb: calc(var(--safe-bottom) + 128px);
+    --head-top: calc(var(--safe-top) + 26px);
+    --nav-bottom: calc(var(--safe-bottom) + 16px);
+    --title-size: clamp(22px, 6.4vw, 27px);
   }
+  #title { max-width: 58vw; }
+  #help { display: none; }
+  nav button.mark { min-width: 72px; }
+  #editor { align-items: flex-end; padding: 10px 10px max(8px, var(--safe-bottom)); }
+  .slip { width: min(520px, 100%); max-height: calc(100dvh - var(--safe-top) - 12px); padding: 22px 22px max(12px, var(--safe-bottom)); }
 }
 
+/* ---------- phones, landscape: everything moves into thin top and bottom margins ---------- */
 @media (orientation: landscape) and (max-height: 520px) {
   :root {
-    --mx: calc(var(--safe-left) + clamp(10px, 1.8vw, 18px));
-    --mt: calc(var(--safe-top) + clamp(42px, 11vh, 50px));
-    --mb: calc(var(--safe-bottom) + clamp(54px, 14vh, 64px));
+    --mx: calc(max(var(--safe-left), var(--safe-right)) + 34px);
+    --mt: calc(var(--safe-top) + 62px);
+    --mb: calc(var(--safe-bottom) + 54px);
+    --head-top: calc(var(--safe-top) + 10px);
+    --nav-bottom: calc(var(--safe-bottom) + 5px);
+    --title-size: 22px;
   }
-  .journal-header { top: calc(var(--safe-top) + 3px); min-height: 42px; }
-  #title { font-size: clamp(19px, 3.3vw, 26px); }
-  nav { min-height: 48px; bottom: calc(var(--mb) + 4px); }
-  nav button { min-height: 44px; }
-  #hint { bottom: calc(var(--safe-bottom) + 58px); }
-  #hint { max-width: 38vw; }
-  #undoBtn { bottom: calc(var(--mb) + 58px); }
-  #stick { bottom: calc(var(--safe-bottom) + 60px); }
+  .head-text { flex-direction: row; align-items: baseline; gap: 16px; }
+  .dateline { margin-top: 0; }
+  #help { display: none; }
+  #hint { left: auto; right: var(--mx); bottom: calc(var(--nav-bottom) + 14px); max-width: 24vw; transform: none; text-align: right; }
   #editor { padding-top: max(8px, var(--safe-top)); padding-bottom: max(8px, var(--safe-bottom)); }
-  .slip { width: min(420px, 92vw); max-height: calc(100dvh - var(--safe-top) - var(--safe-bottom) - 16px); padding-top: 13px; padding-bottom: 9px; }
-  #noteText { height: 74px; line-height: 27px; background: repeating-linear-gradient(transparent 0 26px, rgba(48, 46, 43, 0.13) 26px 27px); }
-  #pad { max-height: 28vh; }
-  .style-pickers { margin-bottom: 5px; }
+  .slip { width: min(440px, 92vw); max-height: calc(100dvh - var(--safe-top) - var(--safe-bottom) - 16px); padding-top: 16px; padding-bottom: 8px; }
+  #noteText { height: 66px; }
+  #pad { max-height: 30vh; }
 }
 
 @media (prefers-reduced-motion: reduce) {
