@@ -256,36 +256,51 @@ export interface PenOpts extends InkOpts {
   hook?: boolean;
   /** how far a redraw may wander, in px, on top of the new jitter (default 0.45) */
   breathe?: number;
+  /** cycle pre-drawn wobble variants at 8 fps (pencil notes; also used in sketchy mode) */
+  boil?: boolean;
 }
+export type LineFeel = "still" | "breathing" | "sketchy";
 const live = new Set<PenLine>();
 let maskId = 0;
+let feel: LineFeel = "breathing";
+let motionSignal: AbortSignal | null = null;
+let breathTimer = 0, boilTimer = 0, boilFrame = 0;
+
+export const getLineFeel = () => feel;
 
 export class PenLine {
   readonly g: SVGGElement;
   busy = false;
   private bodies: [SVGPathElement, SVGPathElement];
+  private plates: [SVGPathElement, SVGPathElement];
   private front = 0;
   private prepared: Strokes = [];
+  private boils: string[] = [];
   private readonly hand = (Math.random() * 1e9) | 0; // this line's character: drift, tremor, hook
   private jitter = (Math.random() * 1e9) | 0;         // this drawing of it: fine jitter, pressure
   private nextJitter = 0;
   private reveal: SVGPathElement | null = null;
   private mask: SVGMaskElement | null = null;
   private fade: Animation[] = [];
+  private readonly off: Pt; // 1 px print-offset, used in sketchy mode
 
   constructor(parent: Element, readonly opts: PenOpts) {
     this.g = svg("g", { class: "penline" + (opts.className ? " " + opts.className : "") });
-    this.bodies = [svg("path", { class: "ink-body" }), svg("path", { class: "ink-body", opacity: 0 })];
-    this.g.append(...this.bodies);
+    this.plates = [svg("path", { class: "ink-fill" }), svg("path", { class: "ink-fill", opacity: "0" })];
+    this.bodies = [svg("path", { class: "ink-body" }), svg("path", { class: "ink-body", opacity: "0" })];
+    this.g.append(...this.plates, ...this.bodies);
+    const a = rng(this.hand)() * Math.PI * 2;
+    this.off = [Math.cos(a), Math.sin(a)];
     parent.appendChild(this.g);
     live.add(this);
+    this.syncFeel();
   }
 
   private shape(jitter: number) {
     const k = this.opts.wobble ?? 1;
     const rough = this.prepared.map((p, i) => roughen(p, this.hand + i * 101, jitter + i * 7, k));
-    // a redraw changes only the jitter and this breath, so no point moves more than ~2 px
-    return breathe(rough, jitter, this.opts.breathe ?? 0.45);
+    // a redraw / boil variant changes only the jitter and this breath: under 2 px
+    return breathe(rough, jitter, Math.min(this.opts.breathe ?? 0.45, 1.1));
   }
   private outline(jitter: number) {
     const { width, taper, pressure, blob } = this.opts;
@@ -299,13 +314,40 @@ export class PenLine {
       const dense = s.length > 1 ? spline(s, 3) : s;
       return hook ? hookTail(dense, this.hand + i * 13, Math.min(1, k + 0.3)) : dense;
     });
+    // three pre-drawn wobbles, same hand, different jitter; cycling these is the boil
+    this.boils = [this.jitter, this.jitter + 91, this.jitter + 173].map((j) => this.outline(j));
     this.paint();
     return this;
   }
   private paint() {
-    this.bodies[this.front].setAttribute("d", this.outline(this.jitter));
-    if (this.busy) this.bodies[1 - this.front].setAttribute("d", this.outline(this.nextJitter));
+    this.showVariant(this.boiling() ? boilFrame : 0);
+    if (this.busy) {
+      const d = this.outline(this.nextJitter);
+      this.bodies[1 - this.front].setAttribute("d", d);
+      this.plates[1 - this.front].setAttribute("d", d);
+    }
     this.reveal?.setAttribute("d", curveOf(this.shape(this.jitter)));
+  }
+  showVariant(i: number) {
+    const d = this.boils[i % 3] || this.boils[0];
+    if (!d) return;
+    this.bodies[this.front].setAttribute("d", d);
+    this.plates[this.front].setAttribute("d", d);
+  }
+  boiling() {
+    return !reducedMotion() && (this.opts.boil || feel === "sketchy");
+  }
+  pulse(i: number) {
+    if (this.busy || this.reveal || !this.boiling()) return;
+    this.showVariant(i);
+  }
+  syncFeel() {
+    const off = feel === "sketchy" && !reducedMotion();
+    const [x, y] = this.off;
+    const t = off ? `translate(${x.toFixed(2)} ${y.toFixed(2)})` : "";
+    this.bodies.forEach((b) => b.setAttribute("transform", t));
+    this.plates.forEach((p) => p.setAttribute("visibility", off ? "visible" : "hidden"));
+    if (!this.boiling()) this.showVariant(0);
   }
 
   /** ink the line on from its first point to its last; resolves once it is fully drawn */
@@ -333,18 +375,23 @@ export class PenLine {
 
   /** crossfade to the same line drawn again with a slightly different hand */
   redraw(duration = 400) {
-    if (this.busy || this.reveal || !this.prepared.length) return false;
+    if (this.busy || this.reveal || !this.prepared.length || feel !== "breathing") return false;
     this.busy = true;
     this.nextJitter = (Math.random() * 1e9) | 0;
+    const d = this.outline(this.nextJitter);
     const out = this.bodies[this.front], inn = this.bodies[1 - this.front];
-    inn.setAttribute("d", this.outline(this.nextJitter));
+    const outP = this.plates[this.front], innP = this.plates[1 - this.front];
+    inn.setAttribute("d", d); innP.setAttribute("d", d);
     const opt: KeyframeAnimationOptions = { duration, easing: "ease-in-out", fill: "forwards" };
     this.fade = [out.animate([{ opacity: 1 }, { opacity: 0 }], opt), inn.animate([{ opacity: 0 }, { opacity: 1 }], opt)];
     this.fade[1].finished.then(() => {
       out.setAttribute("opacity", "0"); inn.setAttribute("opacity", "1");
+      outP.setAttribute("opacity", "0"); innP.setAttribute("opacity", "1");
       this.fade.forEach((f) => f.cancel()); this.fade = [];
-      out.setAttribute("d", "");
-      this.front = 1 - this.front; this.jitter = this.nextJitter; this.busy = false;
+      out.setAttribute("d", ""); outP.setAttribute("d", "");
+      this.front = 1 - this.front; this.jitter = this.nextJitter;
+      this.boils = [this.jitter, this.jitter + 91, this.jitter + 173].map((j) => this.outline(j));
+      this.busy = false;
     }, () => { this.busy = false; });
     return true;
   }
@@ -362,18 +409,42 @@ export class PenLine {
   }
 }
 
-/** every few seconds one visible line is drawn again, so the page never looks frozen */
-export function keepSketching(signal: AbortSignal) {
-  if (reducedMotion()) return;
-  let timer = 0;
-  const tick = () => {
-    for (const l of live) if (!l.g.isConnected) l.dispose();
-    if (!document.hidden && ![...live].some((l) => l.busy)) {
-      const pool = [...live].filter((l) => l.visible());
-      if (pool.length) pool[(Math.random() * pool.length) | 0].redraw();
-    }
-    timer = window.setTimeout(tick, 2400 + Math.random() * 2400);
+export function setLineFeel(next: LineFeel) {
+  feel = next === "still" || next === "sketchy" ? next : "breathing";
+  document.documentElement.dataset.lines = feel;
+  for (const l of live) l.syncFeel();
+  restartMotion();
+}
+
+function restartMotion() {
+  clearTimeout(breathTimer); clearTimeout(boilTimer);
+  breathTimer = boilTimer = 0;
+  if (!motionSignal || motionSignal.aborted || reducedMotion()) return;
+  if (feel === "breathing") {
+    const tick = () => {
+      for (const l of live) if (!l.g.isConnected) l.dispose();
+      if (!document.hidden && ![...live].some((l) => l.busy)) {
+        const pool = [...live].filter((l) => l.visible() && !l.opts.boil);
+        if (pool.length) pool[(Math.random() * pool.length) | 0].redraw();
+      }
+      breathTimer = window.setTimeout(tick, 2400 + Math.random() * 2400);
+    };
+    breathTimer = window.setTimeout(tick, 2800);
+  }
+  const pulse = () => {
+    boilFrame = (boilFrame + 1) % 3;
+    if (!document.hidden) for (const l of live) l.pulse(boilFrame);
+    boilTimer = window.setTimeout(pulse, 125);
   };
-  timer = window.setTimeout(tick, 2800);
-  signal.addEventListener("abort", () => { clearTimeout(timer); [...live].forEach((l) => l.dispose()); });
+  boilTimer = window.setTimeout(pulse, 125);
+}
+
+/** start the living-line loop (breathing redraw and/or 8 fps boil) until `signal` aborts */
+export function keepSketching(signal: AbortSignal) {
+  motionSignal = signal;
+  signal.addEventListener("abort", () => {
+    clearTimeout(breathTimer); clearTimeout(boilTimer);
+    [...live].forEach((l) => l.dispose());
+  });
+  restartMotion();
 }

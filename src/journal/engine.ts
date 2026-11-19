@@ -9,12 +9,12 @@ import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { SparkRenderer, SplatMesh, dyno } from "@sparkjsdev/spark";
 import { normalizeNoteStyle } from "./note-style.js";
-import { listPages, getPage, createPage, savePage, deletePage, takeLegacy } from "./store";
-import { PenLine, rng, hash, f1, openCurve, loopPts, overLine, rectStrokes, inkOutline, keepSketching, reducedMotion } from "./pen";
+import { listPages, getPage, createPage, savePage, deletePage, takeLegacy, getLines, setLines, getSong, saveSong, deleteSong } from "./store";
+import { PenLine, rng, hash, f1, openCurve, loopPts, overLine, linePts, rectStrokes, inkOutline, keepSketching, reducedMotion, setLineFeel, getLineFeel } from "./pen";
 
 type Vec3 = [number, number, number];
-interface Note { id: string; p: Vec3; text: string; strokes: number[][][] | null; style?: "thought" | "line"; el?: HTMLElement }
-interface Doodle { pts: Vec3[]; d: number; el?: SVGPathElement }
+interface Note { id: string; p: Vec3; text: string; strokes: number[][][] | null; style?: "pencil" | "whisper"; scale?: number; reach?: number; color?: "black" | "white"; el?: HTMLElement }
+interface Doodle { pts: Vec3[]; d: number; color?: "black" | "white"; el?: SVGPathElement }
 interface Page { key: string; title: string; flipped: boolean; notes: Note[]; doodles: Doodle[]; date?: string }
 interface Source { fileBytes: Uint8Array; key: string; label: string; flipped?: boolean; title?: string; start?: Vec3; target?: Vec3 }
 
@@ -48,9 +48,9 @@ function labelBox(b) {
 function markOf(b) {
   const on = b.classList.contains("on");
   if (b.classList.contains("tool")) return on ? "loop" : "faint";
-  if (b.classList.contains("style-picker")) return on ? "loop" : "";
+  if (b.classList.contains("style-picker") || b.classList.contains("color-picker") || b.classList.contains("feel")) return on ? "loop" : "";
   if (b.closest(".tabs")) return on ? "under" : "";
-  if (b.id === "saveBtn") return "loop";
+  if (b.id === "saveBtn" || b.id === "songPlay") return "loop";
   return "faint";
 }
 function drawMarks(animate = false) {
@@ -79,12 +79,56 @@ function drawMarks(animate = false) {
   });
 }
 
+function syncLineFeel(feel = getLineFeel()) {
+  const toggle = $("inkFeelToggle"), menu = $("inkFeelMenu");
+  for (const name of ["still", "breathing", "sketchy"]) {
+    const button = $("feel" + name[0].toUpperCase() + name.slice(1));
+    const selected = feel === name;
+    button.classList.toggle("on", selected);
+    button.setAttribute("aria-pressed", String(selected));
+  }
+  toggle.textContent = `ink · ${feel}`;
+  toggle.setAttribute("aria-label", `Ink movement: ${feel}. Change how the hand-drawn lines move.`);
+  toggle.setAttribute("aria-expanded", String(!menu.hidden));
+  drawMarks(true);
+}
+
+async function chooseLineFeel(feel) {
+  lineFeelTouched = true;
+  setLineFeel(feel);
+  syncLineFeel(feel);
+  $("inkFeelMenu").hidden = true;
+  $("inkFeelToggle").setAttribute("aria-expanded", "false");
+  try { await setLines(feel); } catch (err) { console.warn("could not save the ink movement preference", err); }
+}
+let lineFeelTouched = false;
+
+$("inkFeelToggle").onclick = () => {
+  const menu = $("inkFeelMenu"), open = menu.hidden;
+  menu.hidden = !open;
+  $("inkFeelToggle").setAttribute("aria-expanded", String(open));
+  if (open) requestAnimationFrame(() => drawMarks(true));
+};
+$("feelStill").onclick = () => chooseLineFeel("still");
+$("feelBreathing").onclick = () => chooseLineFeel("breathing");
+$("feelSketchy").onclick = () => chooseLineFeel("sketchy");
+document.addEventListener("pointerdown", (e) => {
+  if (!$("inkFeelMenu").hidden && !$("inkFeelMenu").parentElement.contains(e.target)) {
+    $("inkFeelMenu").hidden = true;
+    $("inkFeelToggle").setAttribute("aria-expanded", "false");
+  }
+}, { signal: lifecycle.signal });
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Escape" || $("inkFeelMenu").hidden) return;
+  $("inkFeelMenu").hidden = true;
+  $("inkFeelToggle").setAttribute("aria-expanded", "false");
+  $("inkFeelToggle").focus();
+}, { signal: lifecycle.signal });
+
 // ---------- the title is lettered by hand: each character sits a little off the line ----------
-function letterTitle() {
-  const t = $("title");
-  if (document.activeElement === t) return; // plain text while it is being edited
-  t.textContent = "";
-  const text = page?.title || "", r = rng(hash(text) ^ 0x51ed);
+function letterInto(el, text, seed) {
+  el.textContent = "";
+  const r = rng(seed);
   for (const ch of text) {
     const s = document.createElement("span");
     s.className = "ch";
@@ -94,8 +138,13 @@ function letterTitle() {
       s.style.rotate = `${((r() - 0.5) * 5).toFixed(1)}deg`;
     }
     s.style.marginRight = `${((r() - 0.35) * 2.2).toFixed(2)}px`;      // spacing jitter
-    t.appendChild(s);
+    el.appendChild(s);
   }
+}
+function letterTitle() {
+  const t = $("title");
+  if (document.activeElement === t) return; // plain text while it is being edited
+  letterInto(t, page?.title || "", hash(page?.title || "") ^ 0x51ed);
   drawTitleLine();
 }
 function drawTitleLine() {
@@ -166,6 +215,7 @@ function drawChrome() {
   tornEdgeMask();
   drawTitleLine();
   drawMarks();
+  penIn($("sealRing"), "seal", { width: 0.85, taper: 4, wobble: 0.8 }).set([loopPts(11, 12, 9.2, 10.2, hash(page?.number || 0) ^ 44, { turns: 1.2 })]);
   penIn($("stickRing"), "stick", { width: 0.9, className: "faint", taper: 8 }).set([loopPts(48, 48, 40, 40, 7)]);
   penIn($("knobRing"), "knob", { width: 1.05, taper: 4, step: 2, wobble: 0.6 }).set([loopPts(18, 18, 9, 9, 9, { turns: 1.25 })]);
   penIn($("padBox"), "pad", { width: 0.75, className: "faint", taper: 6, wobble: 0.6 }).set(rectStrokes(4, 4, 252, 142, 5, 4));
@@ -260,12 +310,87 @@ let inkDirty = true;
 
 const setStatus = (msg) => { $("status").textContent = msg; $("status").style.opacity = msg ? 1 : 0; };
 const today = () => { const d = new Date(); return `${d.getDate()}. ${["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"][d.getMonth()]} ${d.getFullYear()}`; };
+const pageSong = $("pageSong");
+let pageSongUrl = null;
+
+async function hushSong() {
+  pageSong.pause();
+  try { pageSong.currentTime = 0; } catch { /* the source may still be loading */ }
+}
+
+async function bindSong(pg) {
+  const pick = $("songPick"), play = $("songPlay"), ask = $("songAsk");
+  const name = pg.song;
+  await hushSong();
+  pick.textContent = name ? `song: ${name}` : "song";
+  play.hidden = !name;
+  ask.hidden = true;
+  pick.hidden = false;
+
+  if (pageSongUrl) URL.revokeObjectURL(pageSongUrl);
+  pageSongUrl = null;
+  pageSong.removeAttribute("src");
+  pageSong.load();
+  if (!name) return;
+
+  const bytes = await getSong(pg.id);
+  if (pg !== page || pg.song !== name) return;
+  if (!bytes) {
+    pg.song = null;
+    pick.textContent = "song";
+    play.hidden = true;
+    save(true);
+    return;
+  }
+
+  const ext = name.split(".").pop()?.toLowerCase();
+  const mime = ext === "mp3" ? "audio/mpeg" : ext === "wav" ? "audio/wav" : "audio/mp4";
+  pageSongUrl = URL.createObjectURL(new Blob([bytes], { type: mime }));
+  pageSong.src = pageSongUrl;
+  pageSong.load();
+}
+
+$("songPick").onclick = () => {
+  if (!page) return;
+  if (page.song) {
+    $("songPick").hidden = true;
+    $("songAsk").hidden = false;
+    $("songNo").focus();
+  } else $("songInput").click();
+};
+$("songPlay").onclick = async () => {
+  if (!page?.song) return;
+  if (pageSong.paused) {
+    try { await pageSong.play(); } catch (err) { console.warn("could not play the page song", err); }
+  } else await hushSong();
+};
+$("songNo").onclick = () => { $("songAsk").hidden = true; $("songPick").hidden = false; };
+$("songYes").onclick = async () => {
+  if (!page) return;
+  await hushSong();
+  await deleteSong(page.id);
+  page.song = null;
+  save(true);
+  await bindSong(page);
+};
+$("songInput").onchange = async (e) => {
+  const file = e.target.files?.[0];
+  e.target.value = "";
+  if (!file || !page) return;
+  const pg = page;
+  await saveSong(pg.id, new Uint8Array(await file.arrayBuffer()));
+  if (page !== pg) return;
+  pg.song = file.name;
+  save(true);
+  await bindSong(pg);
+};
 
 // what goes into storage: plain data only (notes and doodles also carry DOM elements while on screen)
 const recordOf = (pg) => ({
   ...pg,
-  notes: pg.notes.map(({ id, p, text, strokes, style, scale }) => ({ id, p, text, strokes, style, scale: scale ?? 1 })),
-  doodles: pg.doodles.map(({ pts, d }) => ({ pts, d })),
+    notes: pg.notes.map(({ id, p, text, strokes, style, scale, reach, color }) => ({ id, p, text, strokes, style, scale: scale ?? 1, reach: reach ?? 1, color: color === "white" ? "white" : "black" })),
+  doodles: pg.doodles.map(({ pts, d, color }) => ({ pts, d, color: color === "white" ? "white" : "black" })),
+  song: pg.song || null,
 });
 let saveTimer = 0;
 // saves are gathered for a moment, since typing a title or drawing would otherwise write on every change
@@ -313,17 +438,22 @@ async function loadPage(id, direction = 0) {
   if (disposed || token !== loadToken) return;
   if (!stored) { setStatus("that page could not be found"); return; }
   save(true); // anything pending on the page being left
+  await hushSong();
   if (splat) { scene.remove(splat); splat.dispose?.(); splat = null; }
 
   const { scanBytes, ...rec } = stored;
   page = rec;
   page.notes ||= [];
+  const needsStyleUpgrade = page.notes.some((n) => n.style !== "pencil" && n.style !== "whisper");
   page.notes.forEach(normalizeNoteStyle);
   page.doodles ||= [];
+  if (needsStyleUpgrade) save(true);
   lastPageId = page.id;
   $("pageDate").textContent = page.date;
-  $("seal").textContent = pad2(page.number);
+  $("sealNum").textContent = pad2(page.number);
+  page.song = page.song || null;
   letterTitle();
+  await bindSong(page);
   $("notes").innerHTML = "";
   $("ink").innerHTML = "";
   if (direction && !reducedMotion()) {
@@ -340,7 +470,7 @@ async function loadPage(id, direction = 0) {
   camera.position.fromArray(page.start || [0, 0, 3]);
   controls.target.fromArray(page.target || [0, 0, 0]);
   camera.lookAt(controls.target);
-  // the distance you first see the place from: bubbles are life-size there, and the haze is measured from it
+  // the distance you first see the place from: notes keep a consistent size there, and haze is measured from it
   viewDist = Math.max(0.2, camera.position.distanceTo(controls.target));
   syncLookFromCamera();
   vel.set(0, 0, 0); glide.set(0, 0, 0);
@@ -379,7 +509,7 @@ $("fileInput").onchange = async (e) => {
   const old = takeLegacy("file:" + file.name + ":" + file.size);
   const rec = await createPage({
     scanBytes: bytes, label: file.name, title: old?.title || "", date: old?.date || today(),
-    flipped: old?.flipped ?? true, notes: old?.notes || [], doodles: old?.doodles || [],
+    flipped: old?.flipped ?? true, notes: old?.notes || [], doodles: old?.doodles || [], song: null,
   });
   loadPage(rec.id);
 };
@@ -400,10 +530,22 @@ function setTool(t) {
   $("hint").textContent = tool === "note" ? "tap a spot to leave a note" : (isTouch ? "one finger draws, two move" : "drag to draw on the scene");
   $("hint").classList.toggle("show", !!tool);
   $("undoBtn").classList.toggle("show", tool === "draw");
+  $("drawColorBtn").classList.toggle("available", tool === "draw");
   drawMarks(true);
 }
 $("noteBtn").onclick = () => setTool("note");
 $("drawBtn").onclick = () => setTool("draw");
+let drawColor = "black";
+function syncDrawColor() {
+  $("drawColorBtn").textContent = `ink · ${drawColor}`;
+  $("drawColorBtn").setAttribute("aria-label", `Drawing color: ${drawColor}. Activate to switch to ${drawColor === "black" ? "white" : "black"}.`);
+  $("drawColorBtn").classList.toggle("white", drawColor === "white");
+  drawMarks(true);
+}
+$("drawColorBtn").onclick = () => {
+  drawColor = drawColor === "black" ? "white" : "black";
+  syncDrawColor();
+};
 function flashHint(msg) {
   const h = $("hint"), old = h.textContent;
   h.textContent = msg; h.classList.add("show");
@@ -435,7 +577,7 @@ function beginStroke(e) {
   const hit = ray.intersectObject(splat, false)[0];
   const anchor = hit ? hit.point.clone() : ray.ray.at(1.5, new THREE.Vector3());
   const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(camera.getWorldDirection(new THREE.Vector3()), anchor);
-  const stroke = { pts: [], d: +anchor.distanceTo(camera.position).toFixed(3) };
+  const stroke = { pts: [], d: +anchor.distanceTo(camera.position).toFixed(3), color: drawColor };
   page.doodles.push(stroke);
   drawing = { id: e.pointerId, plane, stroke, x: -99, y: -99 };
   addStrokePoint(e);
@@ -465,7 +607,11 @@ function renderInk() {
   lastInkKey = key; inkDirty = false;
   const W = window.innerWidth, H = window.innerHeight;
   page.doodles.forEach((s, si) => {
-    if (!s.el) { Object.defineProperty(s, "el", { value: svgEl("path"), enumerable: false, writable: true }); $("ink").appendChild(s.el); }
+    if (!s.el) {
+      Object.defineProperty(s, "el", { value: svgEl("path"), enumerable: false, writable: true });
+      s.el.classList.toggle("white-ink", s.color === "white");
+      $("ink").appendChild(s.el);
+    }
     const out = []; let ok = s.pts.length > 0, dist = 1;
     for (let i = 0; i < s.pts.length && ok; i++) {
       pv.fromArray(s.pts[i]); splat.localToWorld(pv);
@@ -481,13 +627,32 @@ function renderInk() {
 }
 
 // ---------- note editor ----------
-let editMode = "write", noteStyle = "thought", padStrokes = [], padCur = null;
+let editMode = "write", noteStyle = "pencil", noteColor = "black", padStrokes = [], padCur = null;
 function setNoteStyle(style) {
-  noteStyle = style === "line" ? "line" : "thought";
-  $("styleThought").classList.toggle("on", noteStyle === "thought");
-  $("styleLine").classList.toggle("on", noteStyle === "line");
-  $("styleThought").setAttribute("aria-pressed", String(noteStyle === "thought"));
-  $("styleLine").setAttribute("aria-pressed", String(noteStyle === "line"));
+  noteStyle = style === "whisper" ? "whisper" : "pencil";
+  for (const name of ["pencil", "whisper"]) {
+    const button = $("style" + name[0].toUpperCase() + name.slice(1));
+    const selected = noteStyle === name;
+    button.classList.toggle("on", selected);
+    button.setAttribute("aria-pressed", String(selected));
+  }
+  drawMarks(true);
+}
+function setNoteColor(color, preview = true) {
+  noteColor = color === "white" ? "white" : "black";
+  for (const name of ["Black", "White"]) {
+    const button = $("noteInk" + name);
+    const selected = noteColor === name.toLowerCase();
+    button.classList.toggle("on", selected);
+    button.setAttribute("aria-pressed", String(selected));
+  }
+  $("slip").classList.toggle("white-ink", noteColor === "white");
+  $("pad").classList.toggle("white-ink", noteColor === "white");
+  const note = editing?.note;
+  if (preview && note) {
+    note.liveColor = noteColor;
+    drawNote(note);
+  }
   drawMarks(true);
 }
 function setTab(mode) {
@@ -513,8 +678,10 @@ function redrawPad() {
 }
 $("tabWrite").onclick = () => setTab("write");
 $("tabDraw").onclick = () => setTab("draw");
-$("styleThought").onclick = () => setNoteStyle("thought");
-$("styleLine").onclick = () => setNoteStyle("line");
+$("stylePencil").onclick = () => setNoteStyle("pencil");
+$("styleWhisper").onclick = () => setNoteStyle("whisper");
+$("noteInkBlack").onclick = () => setNoteColor("black");
+$("noteInkWhite").onclick = () => setNoteColor("white");
 
 const pad = $("pad");
 const padPt = (e) => { const r = pad.getBoundingClientRect(); return [+((e.clientX - r.left) / r.width * 260).toFixed(1), +((e.clientY - r.top) / r.height * 150).toFixed(1)]; };
@@ -539,13 +706,16 @@ $("padUndo").onclick = () => { padStrokes.pop(); redrawPad(); };
 function openEditor(target) {
   editing = target;
   const n = target.note;
-  setNoteStyle(n?.style || "thought");
+  setNoteStyle(n?.style || "pencil");
+  setNoteColor(n?.color || "black", false);
   $("noteText").value = n?.text || "";
   padStrokes = n?.strokes ? n.strokes.map((s) => s.slice()) : [];
   padCur = null;
   $("tearBtn").style.visibility = n ? "visible" : "hidden";
   editScale = n?.scale ?? 1;
   stepEditScale(1);
+  editReach = clampReach(n?.reach ?? 1);
+  syncConnectorControl();
   $("editor").classList.add("open");
   redrawPad();
   setTab(n?.strokes?.length ? "draw" : editMode);
@@ -555,6 +725,10 @@ function openEditor(target) {
 function closeEditor() {
   if (!$("editor").classList.contains("open")) return;
   if (editing?.note) editing.note.liveScale = null; // a size tried in the editor but not saved goes back
+  if (editing?.note) {
+    editing.note.liveReach = null; // an unsaved connector adjustment returns to its stored length
+    if (editing.note.liveColor) { editing.note.liveColor = null; drawNote(editing.note); }
+  }
   const returnFocus = editing?.note?.el?.isConnected ? editing.note.el.querySelector(".card") : $("noteBtn");
   $("editor").classList.remove("open"); $("noteText").blur(); editing = null;
   requestAnimationFrame(() => returnFocus?.focus());
@@ -572,10 +746,11 @@ $("saveBtn").onclick = () => {
   if (editMode === "draw" ? !padStrokes.length : !text) { closeEditor(); return; }
   if (editing.note) {
     const styleChanged = editing.note.style !== noteStyle;
-    Object.assign(editing.note, content, { style: noteStyle, scale: editScale });
+    Object.assign(editing.note, content, { style: noteStyle, scale: editScale, reach: editReach, color: noteColor });
+    editing.note.liveColor = null;
     drawNote(editing.note, styleChanged);
   } else {
-    const note = { id: Date.now().toString(36), p: editing.point, style: noteStyle, scale: editScale, ...content };
+    const note = { id: Date.now().toString(36), p: editing.point, style: noteStyle, scale: editScale, reach: editReach, color: noteColor, ...content };
     page.notes.push(note);
     makeNoteEl(note, true);
     wantCover(1400); // once it has been sketched in
@@ -589,12 +764,11 @@ $("tearBtn").onclick = () => {
   save(); closeEditor();
 };
 
-// ---------- notes: bubbles that live in the room, projected from 3D every frame ----------
+// ---------- floating notes: memories anchored to the scan and projected each frame ----------
 //
-// Each note has an anchor A on the scan. Its bubble sits at B, a little above A,
-// and drifts a few centimetres on its own slow path in world space, so turning
-// your head moves the drift with the room. The trail of small circles rises from
-// A to B in 3D. Size follows perspective, far bubbles soften, near ones sharpen.
+// Each note has an anchor A on the scan. Its card sits just above or beside A,
+// moving a few millimetres on a slow path in world space. Its short trail stays
+// attached as the camera moves. Size follows perspective and distant notes soften.
 let soapId = 0;
 function makeNoteEl(note, fresh = false) {
   const el = document.createElement("div");
@@ -636,9 +810,12 @@ function drawNote(note, sketch = false) {
   } else c.textContent = note.text;
 
   const card = el.querySelector(".card");
-  card.setAttribute("aria-label", `${note.style === "line" ? "Edit line annotation" : "Edit thought bubble"}: ${note.strokes?.length ? "handwritten note" : note.text}`);
-  el.classList.toggle("line", note.style === "line");
-  el.classList.toggle("thought", note.style !== "line");
+  const whisper = note.style === "whisper";
+  const inkColor = note.liveColor || note.color || "black";
+  card.setAttribute("aria-label", `Edit ${whisper ? "whisper" : "pencil"} note: ${note.strokes?.length ? "handwritten note" : note.text}`);
+  el.classList.toggle("pencil", !whisper);
+  el.classList.toggle("whisper", whisper);
+  el.classList.toggle("white-ink", inkColor === "white");
 
   // the pen lines belonging to this note are rebuilt from scratch
   (el._pens || []).forEach((p) => p.dispose());
@@ -647,11 +824,11 @@ function drawNote(note, sketch = false) {
   const trail = el.querySelector(".trail");
   trail.innerHTML = "";
   el._trailLine = null; el._outline = null; el._dots = []; el._trailKey = "";
-  if (note.style === "line") {
+  if (whisper) {
     el._trailLine = new PenLine(trail, { width: 1.1, taper: 6, step: 2, wobble: 0.7 });
     pens.push(el._trailLine);
   } else {
-    // three small circles, each a pen loop of its own, rising from the anchor to the bubble
+    // A short string of little pencil marks keeps the note attached to its spot.
     [[0.3, 1.6], [0.57, 2.3], [0.84, 3.1]].forEach(([at, rr], i) => {
       const g = svgEl("g", { class: "thought-dot" });
       g.appendChild(svgEl("circle", { class: "dot-fill", r: rr }));
@@ -670,11 +847,11 @@ function drawNote(note, sketch = false) {
   bub.setAttribute("width", w); bub.setAttribute("height", h);
   bub.innerHTML = "";
   let outline = null, body = null;
-  if (note.style !== "line" && w) {
+  if (!whisper && w) {
     // a loose oval round the words with room to spare, so the text never touches the edge
     const cx = w / 2, cy = h / 2, rx = w / 2 + 11, ry = h / 2 + 9;
     const loop = loopPts(cx, cy, rx, ry, seed + 9, { square: 2.35, flat: 0.06 + (seed % 7) / 100 });
-    // the body of a soap bubble: barely there, a little brighter where the light catches it
+    // a barely visible pencil wash sits under the loose ink outline
     const id = `soap-${++soapId}`;
     const grad = svgEl("radialGradient", { id, cx: "36%", cy: "30%", r: "78%" });
     grad.append(svgEl("stop", { offset: "0", class: "soap-light" }), svgEl("stop", { offset: "0.62", class: "soap-mid" }), svgEl("stop", { offset: "1", class: "soap-edge" }));
@@ -695,8 +872,7 @@ function drawNote(note, sketch = false) {
   const dot = el.querySelector(".dot");
   dot.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 140, delay: 20, fill: "backwards" });
   let textAt;
-  if (note.style === "line") {
-    el._trailKey = "";
+  if (whisper) {
     placeNote(note);
     el._trailLine.drawOn(110, 380);
     textAt = 470;
@@ -713,7 +889,7 @@ function drawNote(note, sketch = false) {
 const v = new THREE.Vector3(), worldA = new THREE.Vector3(), worldB = new THREE.Vector3(), worldP = new THREE.Vector3(), lean = new THREE.Vector3();
 let airTime = 0;
 const toScreen = (p) => { worldP.copy(p).project(camera); return [(worldP.x + 1) / 2 * window.innerWidth, (1 - worldP.y) / 2 * window.innerHeight, worldP.z]; };
-// perspective size, relative to the first view; a short screen shows the room smaller, so its bubbles shrink a little too
+// perspective size, relative to the first view; shorter screens scale the notes down slightly
 const lifeSize = (dist) => Math.min(1.4, Math.max(0.55, (viewDist / Math.max(dist, 1e-3)) * Math.min(1.05, Math.sqrt(window.innerHeight / 760))));
 function placeNote(n) {
   const el = n.el, air = n.air;
@@ -725,12 +901,16 @@ function placeNote(n) {
   if (!visible) return;
   if (el.dataset.unsized) drawNote(n);
 
-  // B: a bubble's height above the anchor (about 60 px at the first view), plus its drift
-  const rise = viewDist * 0.085, sway = reducedMotion() ? 0 : viewDist * 0.012, t = airTime;
+  // Keep both note styles close to the tap point, with only a small, slow float.
+  const whisper = n.style === "whisper";
+  const wantReach = clampReach(n.liveReach ?? n.reach ?? 1);
+  air.reach = air.reach == null ? wantReach : air.reach + (wantReach - air.reach) * scaleEase;
+  const reach = air.reach;
+  const rise = viewDist * 0.018 * reach, sway = reducedMotion() ? 0 : viewDist * 0.003 * reach, t = airTime;
   worldB.copy(worldA);
-  worldB.y += (n.style === "line" ? 0.5 : 1) * rise + sway * 1.3 * Math.sin((t / air.ty) * 6.283 + air.py);
+  worldB.y += (whisper ? 0.5 : 1) * rise + sway * 0.8 * Math.sin((t / air.ty) * 6.283 + air.py);
   worldB.x += sway * Math.sin((t / air.tx) * 6.283 + air.px);
-  worldB.z += sway * 0.8 * Math.sin((t / air.tz) * 6.283 + air.pz);
+  worldB.z += sway * 0.6 * Math.sin((t / air.tz) * 6.283 + air.pz);
   // the note's own size (0.5–2, eased toward while it changes) on top of its perspective size
   const want = n.liveScale ?? n.scale ?? 1;
   air.k = air.k == null ? want : air.k + (want - air.k) * scaleEase;
@@ -738,17 +918,25 @@ function placeNote(n) {
   let [bx, by] = toScreen(worldB);
   bx -= ax; by -= ay;
 
-  // keep the bubble on the page: lean it back if it would run off the side
-  const w = (Number(el.dataset.w) || 0) * s, x0 = (n.style === "line" ? 22 : -30) * s, left = ax + bx + x0, right = left + w + (n.style === "line" ? 0 : 20 * s);
-  if (right > window.innerWidth - 8) bx -= right - (window.innerWidth - 8);
-  else if (left < 8) bx += 8 - left;
+  // Keep the card on the print while preserving its position near the anchor.
+  const w = (Number(el.dataset.w) || 0) * s, h = el.querySelector(".card").offsetHeight * s;
+  const whisperGap = 22 * reach;
+  if (whisper) el.style.setProperty("--whisper-gap", `${f1(whisperGap)}px`);
+  const left = ax + bx + (whisper ? whisperGap * s : -8 * s - w / 2), right = left + w;
+  const top = ay + by + (whisper ? -h / 2 : -h - 10 * s), bottom = top + h;
+  const safeLeft = photo.x + 8, safeRight = photo.x + photo.w - 8;
+  const safeTop = photo.y + 8, safeBottom = photo.y + photo.h - 8;
+  if (right > safeRight) bx -= right - safeRight;
+  else if (left < safeLeft) bx += safeLeft - left;
+  if (top < safeTop) by += safeTop - top;
+  else if (bottom > safeBottom) by -= bottom - safeBottom;
 
   el.style.transform = `translate(${f1(ax)}px, ${f1(ay)}px)`;
   el.style.zIndex = String(10000 - Math.round(dist * 100)); // nearer notes on top
   el.querySelector(".bob").style.transform = `translate(${f1(bx)}px, ${f1(by)}px) scale(${s.toFixed(3)})`;
   el.querySelector(".dot").style.scale = Math.max(0.7, s).toFixed(2);
 
-  // depth of field: far bubbles soften and pale, near ones are crisp; very near ones brighten, as if they noticed you
+  // depth of field: far notes soften and pale, near ones are crisp; very near ones brighten, as if they noticed you
   const far = Math.min(1, Math.max(0, (dist - viewDist * 1.1) / (viewDist * 1.4)));
   const near = Math.min(1, Math.max(0, (0.6 - dist) / 0.35));
   const look = `${(far * 1.5).toFixed(1)}:${(1 - far * 0.32).toFixed(2)}:${near.toFixed(2)}`;
@@ -759,17 +947,18 @@ function placeNote(n) {
     el.style.setProperty("--near", near.toFixed(2));
   }
 
-  if (n.style === "line") {
-    // the line leans up and out from the anchor to where the words begin
-    const ex = bx + 22 * s, ey = by, len = Math.hypot(ex, ey) || 1, side = Math.cos(air.lean) < 0 ? -1 : 1;
+  if (whisper) {
+    // A short pencilled line reaches from the tap to the whisper's left edge.
+    const ex = bx + whisperGap * s, ey = by, len = Math.hypot(ex, ey) || 1, side = Math.cos(air.lean) < 0 ? -1 : 1;
     const key = `${Math.round(ex)}:${Math.round(ey)}`;
     if (el._trailKey !== key) {
       el._trailKey = key;
-      const nx = -ey / len, ny = ex / len, pts = [0, 0.3, 0.6, 1].map((u) => [ex * u + nx * Math.sin(u * Math.PI) * len * 0.12 * side, ey * u + ny * Math.sin(u * Math.PI) * len * 0.12 * side]);
+      const nx = -ey / len, ny = ex / len;
+      const pts = [0, 0.3, 0.6, 1].map((u) => [ex * u + nx * Math.sin(u * Math.PI) * len * 0.12 * side, ey * u + ny * Math.sin(u * Math.PI) * len * 0.12 * side]);
       el._trailLine?.set([pts]);
     }
   } else {
-    // the circles rise in 3D, each a little further from the anchor, each sized by its own depth
+    // Pencil marks stay attached to the note as it moves.
     lean.set(Math.cos(air.lean), 0, Math.sin(air.lean)).multiplyScalar(rise * 0.12);
     for (const d of el._dots || []) {
       worldP.copy(worldA).lerp(worldB, d.at).addScaledVector(lean, Math.sin(d.at * Math.PI));
@@ -957,7 +1146,20 @@ async function renderCovers() {
       const url = URL.createObjectURL(pg.cover);
       coverUrls.push(url);
       img.src = url;
-    } else print.classList.add("unseen");
+    } else {
+      print.classList.add("unseen");
+      const sketch = svgEl("svg", { class: "unseen-sketch", viewBox: "0 0 180 120", "aria-hidden": "true" });
+      sketch.innerHTML = `
+        <path d="M56 13 Q56 10 59 11 L121 15 Q124 15 123 18 L120 54 Q120 57 117 56 L58 53 Q55 53 56 50 Z" />
+        <path d="M88 13 L87 54 M57 31 L122 34" class="light" />
+        <path d="M48 60 Q76 57 128 63 M50 63 Q82 61 130 65" />
+        <path d="M62 65 L64 94 Q86 98 114 95 L117 66" />
+        <path d="M58 97 Q88 101 120 98 M65 103 Q90 106 114 103" class="light" />
+        <path d="M136 62 Q132 57 135 52 Q138 48 140 43 M140 55 Q146 51 148 46 M135 54 Q129 49 128 45" class="light" />
+        <path d="M132 63 Q140 65 147 62 L145 70 Q139 72 133 69 Z" class="accent" />
+        <path d="M39 26 l4 -2 M34 33 l3 1 M148 24 l4 2" class="light" />`;
+      print.appendChild(sketch);
+    }
     // each print gets its own torn edge, the same every time for that page
     const tear = () => {
       const w = print.offsetWidth, h = print.offsetHeight;
@@ -1013,6 +1215,8 @@ function captureCover() {
 // ---------- resizing a note: pinch it, scroll over it, or "smaller"/"larger" in the editor ----------
 const SCALE_MIN = 0.5, SCALE_MAX = 2;
 const clampScale = (k) => Math.min(SCALE_MAX, Math.max(SCALE_MIN, k));
+const REACH_MIN = 0.3, REACH_MAX = 2.5;
+const clampReach = (k) => Math.min(REACH_MAX, Math.max(REACH_MIN, Number(k) || 1));
 // past the limits it gives a little, like stretching paper, and springs back when you let go
 const rubber = (k) => (k > SCALE_MAX ? SCALE_MAX + (k - SCALE_MAX) * 0.3 : k < SCALE_MIN ? SCALE_MIN - (SCALE_MIN - k) * 0.3 : k);
 function showResizing(note) {
@@ -1064,6 +1268,18 @@ function noteWheel(note, e) {
 }
 // the editor's two words step the size by 15%; it is kept when you save, undone if you cancel
 let editScale = 1;
+let editReach = 1;
+function syncConnectorControl() {
+  const input = $("connectorReach");
+  input.value = String(editReach);
+  $("connectorValue").textContent = `${Math.round(editReach * 100)}%`;
+}
+$("connectorReach").addEventListener("input", () => {
+  editReach = clampReach($("connectorReach").value);
+  syncConnectorControl();
+  const note = editing?.note;
+  if (note) note.liveReach = editReach;
+});
 function stepEditScale(f) {
   editScale = clampScale(editScale * f);
   const n = editing?.note;
@@ -1080,6 +1296,11 @@ placeLightLeak();
 drawChrome();
 sketchIn();
 keepSketching(lifecycle.signal);
+getLines().then((feel) => {
+  if (disposed || lineFeelTouched) return;
+  setLineFeel(feel);
+  syncLineFeel(feel);
+}).catch((err) => console.warn("could not load the ink movement preference", err));
 $("title").addEventListener("input", drawTitleLine, { signal: lifecycle.signal });
 // renaming happens in plain text: the hand-lettered spans come back when you are done
 $("title").addEventListener("focus", () => {
@@ -1126,6 +1347,10 @@ setStatus("");
 return () => {
   disposed = true;
   lifecycle.abort();
+  void hushSong();
+  pageSong.removeAttribute("src");
+  pageSong.load();
+  if (pageSongUrl) { URL.revokeObjectURL(pageSongUrl); pageSongUrl = null; }
   renderer.setAnimationLoop(null);
   if (splat) { scene.remove(splat); splat.dispose?.(); splat = null; }
   renderer.dispose();

@@ -29,6 +29,11 @@ export default function App() {
           <feColorMatrix in="m" type="matrix" values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 -3 2.75" result="holes" />
           <feComposite in="d" in2="holes" operator="in" />
         </filter>
+        {/* a slightly grainy edge for pencil notes */}
+        <filter id="grain" x="-15%" y="-15%" width="130%" height="130%">
+          <feTurbulence type="fractalNoise" baseFrequency="0.9" numOctaves="2" seed="6" result="n" />
+          <feDisplacementMap in="SourceGraphic" in2="n" scale="0.8" />
+        </filter>
       </svg>
 
       <main className="journal-viewer" aria-label="Splat Journal memory viewer">
@@ -50,17 +55,25 @@ export default function App() {
 
         {/* tools are words in the margins of the page */}
         <div className="margin top-left" aria-label="Memory actions">
-          <button id="homeBtn" className="mark" type="button" aria-label="Back to all pages">pages</button>
-          <button id="openBtn" className="mark" type="button" aria-label="Open a 3D scan">open</button>
-          <button id="flipBtn" className="mark" type="button" aria-label="Flip scan orientation">flip</button>
+          <button id="homeBtn" className="mark" type="button" aria-label="back to all pages">pages</button>
+          <button id="openBtn" className="mark" type="button" aria-label="open a 3d scan">open</button>
+          <button id="flipBtn" className="mark" type="button" aria-label="flip scan orientation">flip</button>
         </div>
         <nav className="margin bottom-left" aria-label="Memory tools">
           <button id="noteBtn" className="mark tool" type="button" aria-label="Add or edit a note" aria-pressed="false">note</button>
           <button id="drawBtn" className="mark tool" type="button" aria-label="Draw on the memory" aria-pressed="false">draw</button>
+          <button id="drawColorBtn" className="mark draw-color" type="button" aria-label="Drawing color: black">ink · black</button>
           <button id="undoBtn" className="mark" type="button" aria-label="Undo last drawing stroke">undo</button>
         </nav>
         <div className="margin bottom-center">
-          <button id="floatBtn" className="mark tool on" type="button" aria-label="Float through the memory" aria-pressed="true">float</button>
+          <button id="floatBtn" className="mark tool on" type="button" aria-label="float through the memory" aria-pressed="true">float</button>
+        </div>
+        <div className="margin bottom-song" aria-label="page song">
+          <button id="songPick" className="mark" type="button" aria-label="choose a song for this page">song</button>
+          <button id="songPlay" className="mark" type="button" hidden aria-label="play or pause the page song">play</button>
+          <span id="songAsk" hidden>
+            remove song? <button id="songYes" className="yes" type="button">yes</button> <button id="songNo" className="no" type="button">no</button>
+          </span>
         </div>
 
         {/* the colophon: title, date and seal in the corner, as on a card */}
@@ -77,26 +90,50 @@ export default function App() {
             <svg id="titleLine" aria-hidden="true" />
             <span id="pageDate" />
           </div>
-          <span id="seal" className="seal" aria-label="Page number">01</span>
+          <span id="seal" className="seal" aria-label="page number">
+            <svg id="sealRing" viewBox="0 0 22 24" aria-hidden="true" />
+            <span id="sealNum">01</span>
+          </span>
         </footer>
         {/* the scrapbook: every page as a torn print with its seal, title and date */}
-        <section id="home" aria-label="All pages">
+        <section id="home" aria-label="all pages">
           <div className="margin top-left">
-            <button id="homeOpenBtn" className="mark" type="button" aria-label="Open a 3D scan as a new page">open</button>
+            <button id="homeOpenBtn" className="mark" type="button" aria-label="open a 3d scan as a new page">open</button>
+          </div>
+          <div className="margin bottom-left ink-settings">
+            <button id="inkFeelToggle" className="mark" type="button" aria-expanded="false" aria-controls="inkFeelMenu">ink · breathing</button>
+            <div id="inkFeelMenu" className="ink-feel-menu" role="group" aria-label="Ink movement" hidden>
+              <span className="ink-feel-caption">how the hand-drawn ink moves</span>
+              <button id="feelStill" className="mark feel" type="button" aria-pressed="false" title="Keep the ink still">still</button>
+              <button id="feelBreathing" className="mark feel on" type="button" aria-pressed="true" title="Let the ink redraw softly">breathing</button>
+              <button id="feelSketchy" className="mark feel" type="button" aria-pressed="false" title="Add a playful pencil wobble">sketchy</button>
+            </div>
           </div>
           <ol id="covers" />
           <p id="homeEmpty">no pages yet. open a scan to begin one.</p>
         </section>
 
         <input type="file" id="fileInput" accept=".spz,.ply,.splat,.ksplat,.sog" />
+        <input type="file" id="songInput" accept="audio/mpeg,audio/mp4,audio/wav,.mp3,.m4a,.wav" />
+        <audio id="pageSong" loop preload="auto" />
 
         <div id="editor" role="dialog" aria-modal="true" aria-label="Memory note editor">
           <div className="slip" id="slip">
             <svg className="box" id="slipBox" aria-hidden="true" />
             <div className="editor-kicker">a note from this place</div>
-            <div className="style-pickers" role="group" aria-label="Floating note style">
-              <button id="styleThought" className="style-picker mark on" type="button" aria-pressed="true">thought</button>
-              <button id="styleLine" className="style-picker mark" type="button" aria-pressed="false">line</button>
+            <div className="style-pickers" role="group" aria-label="Note style">
+              <button id="stylePencil" className="style-picker mark on" type="button" aria-pressed="true">pencil</button>
+              <button id="styleWhisper" className="style-picker mark" type="button" aria-pressed="false">whisper</button>
+            </div>
+            <div className="note-color-pickers" role="group" aria-label="Note ink color">
+              <span>ink</span>
+              <button id="noteInkBlack" className="color-picker mark on" type="button" aria-pressed="true">black</button>
+              <button id="noteInkWhite" className="color-picker mark" type="button" aria-pressed="false">white</button>
+            </div>
+            <div className="connector-control">
+              <label htmlFor="connectorReach">connector <output id="connectorValue" htmlFor="connectorReach">100%</output></label>
+              <input id="connectorReach" type="range" min="0.3" max="2.5" step="0.05" value="1" aria-label="Connector length" />
+              <div className="connector-ends" aria-hidden="true"><span>short</span><span>long</span></div>
             </div>
             <div className="tabs" role="tablist" aria-label="Note content">
               <button id="tabWrite" className="mark on" type="button" role="tab" aria-selected="true">type</button>

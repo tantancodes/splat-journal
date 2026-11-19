@@ -2,16 +2,16 @@
   color-scheme: light;
 
   /* paper and ink: the seal is the only colour on the page */
-  --paper: #f6f2ea;
-  --paper-veil: rgba(246, 242, 234, 0.62);
+  --paper: #f8f6f0;
+  --paper-veil: rgba(248, 246, 240, 0.84);
   --ink: #2a2825;
-  --ink-soft: rgba(42, 40, 37, 0.78);
-  --pencil: #8b857b;
-  --pencil-faint: rgba(139, 133, 123, 0.62);
+  --ink-soft: rgba(42, 40, 37, 0.88);
+  --pencil: #777168;
+  --pencil-faint: rgba(119, 113, 104, 0.58);
   --seal: #b63f2f;
 
-  --fibre: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='420' height='420'%3E%3Cfilter id='g' x='0' y='0'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' seed='3' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0.42 0 0 0 0 0.37 0 0 0 0 0.29 0.5 0 0 0 -0.22'/%3E%3C/filter%3E%3Cfilter id='f' x='0' y='0'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.045 0.016' numOctaves='5' seed='8' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0.45 0 0 0 0 0.39 0 0 0 0 0.3 0.42 0 0 0 -0.25'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23g)'/%3E%3Crect width='100%25' height='100%25' filter='url(%23f)'/%3E%3C/svg%3E");
-  --fibre-size: 420px;
+  --fibre: url("/design_ref/papertexture.avif");
+  --fibre-size: cover;
   --halo: 0 0 2px var(--paper), 0 0 6px var(--paper), 0 0 12px rgba(246, 242, 234, 0.9);
 
   /* the print: a little faded, edges dissolving into the paper, a faint warm leak in one corner */
@@ -21,7 +21,7 @@
   --vignette: color-mix(in srgb, var(--paper) 30%, transparent);
   --leak: rgba(236, 176, 124, 0.075);
 
-  /* bubbles */
+  /* pencil notes */
   --soap: var(--paper);
   --glint: #fffdf9;
 
@@ -29,9 +29,9 @@
   --hand: "Zen Kurenaido", "Bradley Hand", "Segoe Print", cursive;
   --margin: Avenir, "Avenir Next", "Helvetica Neue", system-ui, sans-serif;
   --margin-weight: 300;
-  --margin-size: 10.5px;
-  --margin-track: 0.22em;
-  --title-size: 21px;
+  --margin-size: 12px;
+  --margin-track: 0.14em;
+  --title-size: 23px;
   --title-max: min(44vw, 340px);
 
   /* the scrapbook */
@@ -39,7 +39,6 @@
   --cover-print: min(100%, 420px);
   --cover-aspect: 4 / 3;
   --cover-gap: 46px;
-  --unseen: color-mix(in srgb, var(--pencil) 13%, transparent);
   --note-size: 19px;
 
   /* touch and motion */
@@ -65,7 +64,7 @@ html, body, #root { width: 100%; height: 100%; margin: 0; }
 
 html, body {
   overflow: hidden;
-  background: var(--fibre) 0 0 / var(--fibre-size) repeat, var(--paper);
+  background: linear-gradient(rgba(248, 246, 240, 0.62), rgba(248, 246, 240, 0.62)), var(--fibre) 0 0 / var(--fibre-size) repeat, var(--paper);
   color: var(--ink);
   font: var(--margin-weight) var(--margin-size)/1.5 var(--margin);
   letter-spacing: var(--margin-track);
@@ -87,6 +86,7 @@ svg { overflow: visible; }
 .penline { color: var(--ink-soft); }
 .penline.faint { color: var(--pencil-faint); }
 .ink-body { fill: currentColor; stroke: none; }
+.ink-fill { fill: currentColor; opacity: 0.38; pointer-events: none; }
 
 .journal-viewer { position: fixed; inset: 0; isolation: isolate; }
 
@@ -116,12 +116,17 @@ svg { overflow: visible; }
   from { translate: 0 0; opacity: 0.75; }
   to { translate: var(--leak-dx, 6%) var(--leak-dy, 4%); opacity: 1; }
 }
+@keyframes memory-doodle-drift {
+  0%, 100% { transform: translateY(0) rotate(-0.3deg); }
+  50% { transform: translateY(-3px) rotate(0.3deg); }
+}
 
 /* handwriting and scene doodles stay in their own projection layer, cut like the print */
 #ink { position: fixed; inset: 0; z-index: 39; width: 100%; height: 100%; pointer-events: none; }
 #ink path { fill: var(--ink); stroke: none; }
+#ink path.white-ink { fill: #fffdf7; filter: drop-shadow(0 0 1.5px rgba(34, 32, 29, 0.5)); }
 
-/* ---------- notes: bubbles in the room (placed, sized and softened per frame by the engine) ---------- */
+/* ---------- floating notes: placed, sized and softened per frame by the engine ---------- */
 #notes { position: fixed; inset: 0; z-index: 40; pointer-events: none; }
 .note { position: absolute; left: 0; top: 0; }
 .dot { position: absolute; left: -2.5px; top: -2.5px; z-index: 3; width: 5px; height: 5px; border-radius: 50%; background: var(--ink); }
@@ -151,15 +156,15 @@ svg { overflow: visible; }
   touch-action: none; /* a pinch on a note resizes it */
 }
 .bub { position: absolute; left: 0; top: 0; z-index: -1; }
-/* a soap bubble: a barely-there body, brighter where the light catches it; the ink outline is what you read */
+/* a barely-there pencil wash under the hand-drawn note outline */
 .bub-body { opacity: calc(0.9 + var(--near, 0) * 0.1); }
 .soap-light { stop-color: var(--glint); stop-opacity: 0.8; }
 .soap-mid { stop-color: var(--soap); stop-opacity: 0.64; }
 .soap-edge { stop-color: var(--soap); stop-opacity: 0.48; }
 .soap-glint { fill: none; stroke: var(--glint); stroke-width: 2.4; stroke-linecap: round; opacity: 0.6; }
-.note.line .bub { display: none; }
-.note.line .card {
-  left: 22px;
+.note.whisper .bub, .note.whisper .dot { display: none; }
+.note.whisper .card {
+  left: var(--whisper-gap, 22px);
   top: 0;
   bottom: auto;
   transform: translateY(-50%);
@@ -169,10 +174,34 @@ svg { overflow: visible; }
   text-align: left;
   font-size: calc(var(--note-size) - 1px);
   text-shadow: var(--halo);
+  color: var(--ink);
 }
+.note.whisper .penline { color: var(--ink-soft); }
+.note.whisper .c { color: var(--ink); }
+.note.whisper .c svg { margin: 0; }
+.note.pencil .dot { display: none; }
+.note.pencil .card {
+  left: -8px;
+  top: 0;
+  bottom: auto;
+  transform: translate(-50%, calc(-100% - 10px));
+  min-width: 0;
+  max-width: min(220px, 58vw);
+  padding: 10px 14px 12px;
+  text-align: center;
+  font-size: calc(var(--note-size) - 1px);
+  text-shadow: none;
+  color: var(--pencil);
+}
+.note.pencil .penline { color: var(--pencil); filter: url(#grain); }
+.note.pencil .c { color: var(--pencil); }
+.note.white-ink .card, .note.white-ink .c { color: #fffdf7; text-shadow: 0 1px 6px rgba(34, 32, 29, 0.55); }
+.note.white-ink .penline { color: #fffdf7; filter: drop-shadow(0 0 1.2px rgba(34, 32, 29, 0.5)); }
+.note.white-ink .dot-fill { fill: #fffdf7; fill-opacity: 0.9; }
+.note.white-ink .c svg path { fill: #fffdf7; }
 .c { display: block; }
 .c svg { display: block; margin: 0 auto; }
-.note.line .c svg { margin: 0; }
+.note.pencil .c svg { margin: 0; }
 .c svg path, #padInk path { fill: var(--ink); stroke: none; }
 
 /* ---------- the margins: tools are words written round the print ---------- */
@@ -186,10 +215,50 @@ button.mark { display: inline-grid; place-items: center; padding: 0 calc(10px - 
 .margin.top-left { top: var(--row-top); left: calc(var(--mx) - 10px); }
 .margin.bottom-left { bottom: var(--row-bottom); left: calc(var(--mx) - 10px); }
 .margin.bottom-center { bottom: var(--row-bottom); left: 50%; transform: translateX(-50%); }
+.margin.bottom-song {
+  right: calc(var(--mx) - 10px);
+  bottom: calc(var(--colophon-bottom) + 52px);
+  max-width: min(46vw, 280px);
+  flex-wrap: wrap;
+}
+#songPick { max-width: 28vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#songAsk { color: var(--pencil); padding: 0 10px; }
+#songAsk .yes { color: var(--ink); min-height: var(--tap); padding: 0 8px; }
+#songAsk .no { min-height: var(--tap); padding: 0 8px; }
+#songPlay:not([hidden]) { display: inline-grid; }
+.ink-settings { position: fixed; }
+.ink-feel-menu {
+  position: absolute;
+  left: 8px;
+  bottom: calc(100% + 8px);
+  z-index: 2;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  align-items: center;
+  gap: 2px;
+  width: min(276px, calc(100vw - 36px));
+  padding: 12px 10px 8px;
+  border: 1px solid rgba(42, 40, 37, 0.14);
+  border-radius: 3px 9px 4px 8px;
+  background: rgba(248, 246, 240, 0.96);
+  box-shadow: 0 10px 30px rgba(42, 40, 37, 0.09);
+  backdrop-filter: blur(8px);
+}
+.ink-feel-menu[hidden] { display: none; }
+.ink-feel-caption { grid-column: 1 / -1; padding: 0 8px 3px; color: var(--pencil); font-size: 10px; letter-spacing: 0.1em; }
+.ink-feel-menu button.mark { min-width: 56px; min-height: 40px; padding-inline: 6px; font-size: 11px; }
+.margin button.feel { color: var(--pencil); }
+.margin button.feel.on { color: var(--ink); }
+.cover-title .song-mark { width: 12px; height: 16px; flex: none; overflow: visible; }
+.cover-title .song-mark .penline { color: var(--pencil); }
 .margin button.tool { color: var(--pencil); }
 .margin button.tool.on { color: var(--ink); }
 #undoBtn { display: none; color: var(--pencil); }
 #undoBtn.show { display: inline-grid; }
+#drawColorBtn { display: none; color: var(--pencil); white-space: nowrap; }
+#drawColorBtn.available { display: inline-flex; align-items: center; gap: 5px; }
+#drawColorBtn::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--ink); }
+#drawColorBtn.white::before { background: #fffdf7; box-shadow: 0 0 0 1px var(--pencil); }
 
 /* the colophon, as on a card: a small lettered title, the date in pencil, the seal beside them */
 .colophon {
@@ -224,6 +293,7 @@ button.mark { display: inline-grid; place-items: center; padding: 0 calc(10px - 
 #titleLine { position: absolute; left: 0; top: 0; width: 1px; height: 1px; pointer-events: none; }
 #pageDate { margin-top: 8px; padding-left: 1px; color: var(--pencil); white-space: nowrap; }
 .seal {
+  position: relative;
   flex: none;
   display: inline-grid;
   place-items: center;
@@ -238,6 +308,15 @@ button.mark { display: inline-grid; place-items: center; padding: 0 calc(10px - 
   filter: url(#rough);
   opacity: 0.92;
 }
+#sealRing {
+  position: absolute;
+  left: -3px; top: -3px;
+  width: 23px; height: 24px;
+  pointer-events: none;
+  filter: none;
+}
+#sealRing .penline { color: var(--seal); opacity: 0.85; }
+.cover .seal svg { display: none; }
 
 #status {
   position: fixed;
@@ -301,26 +380,38 @@ button.mark { display: inline-grid; place-items: center; padding: 0 calc(10px - 
   display: none;
   overflow-y: auto;
   overscroll-behavior: contain;
-  background: var(--fibre) 0 0 / var(--fibre-size) repeat, var(--paper);
+  background: linear-gradient(rgba(248, 246, 240, 0.62), rgba(248, 246, 240, 0.62)), var(--fibre) 0 0 / var(--fibre-size) repeat, var(--paper);
   padding: calc(var(--safe-top) + 76px) var(--mx) calc(var(--safe-bottom) + 64px);
 }
 #home.open { display: block; }
-#home .margin.top-left { position: fixed; }
+#home .margin.top-left, #home .margin.bottom-left { position: fixed; }
 #covers { list-style: none; margin: 0 auto; padding: 0; width: min(100%, var(--cover-w)); display: flex; flex-direction: column; gap: var(--cover-gap); }
 .cover { position: relative; display: flex; flex-direction: column; align-items: flex-start; }
 .cover:nth-child(even) { align-self: flex-end; } /* pasted in a little unevenly, as by hand */
 .cover-open { position: relative; display: block; width: var(--cover-print); padding: 0; text-align: left; }
-.cover-print { display: block; aspect-ratio: var(--cover-aspect); rotate: var(--cover-tilt, -0.6deg); }
+.cover-print { display: block; aspect-ratio: var(--cover-aspect); rotate: var(--cover-tilt, -0.6deg); filter: drop-shadow(0 8px 14px rgba(42, 40, 37, 0.075)); }
 .cover:nth-child(3n + 2) .cover-print { --cover-tilt: 0.8deg; }
 .cover:nth-child(3n) .cover-print { --cover-tilt: -0.2deg; }
 .cover-print img { display: block; width: 100%; height: 100%; object-fit: cover; }
-/* a page not yet looked at: a blank, pencil-toned sheet that says so */
-.cover-print.unseen { display: grid; place-items: center; background: var(--unseen); }
+/* a page not yet looked at: a little place sketch waits on the paper */
+.cover-print.unseen { position: relative; display: grid; place-items: center; background: rgba(255, 255, 255, 0.32); }
 .cover-print.unseen img { display: none; }
-.cover-print.unseen::after { content: "not yet opened"; color: var(--pencil); }
+.cover-print.unseen::after {
+  content: "tap to step inside";
+  position: absolute;
+  left: 0; right: 0; bottom: 9%;
+  color: var(--pencil);
+  text-align: center;
+  font-size: 10px;
+  letter-spacing: 0.13em;
+}
+.unseen-sketch { width: min(190px, 46%); color: var(--ink-soft); overflow: visible; transform-origin: 50% 60%; animation: memory-doodle-drift 8s ease-in-out infinite; }
+.unseen-sketch path, .unseen-sketch circle { fill: none; stroke: currentColor; stroke-width: 1.55; stroke-linecap: round; stroke-linejoin: round; }
+.unseen-sketch .light { opacity: 0.58; stroke-width: 1.05; }
+.unseen-sketch .accent { stroke: var(--seal); stroke-width: 1.25; }
 .cover .seal { position: absolute; left: -6px; top: -7px; }
-.cover-title { margin-top: 12px; color: var(--ink); }
-.cover-date { color: var(--pencil); }
+.cover-title { margin-top: 14px; color: var(--ink); display: flex; align-items: baseline; gap: 10px; font: 400 22px/1.15 var(--hand); letter-spacing: 0.035em; }
+.cover-date { color: var(--pencil); font-size: 11px; letter-spacing: 0.1em; }
 .cover-delete { margin: 2px 0 0 -10px; color: var(--pencil); }
 .cover-delete button { min-height: var(--tap); padding: 0 10px; color: var(--pencil); }
 .cover-delete .yes { color: var(--ink); }
@@ -359,6 +450,15 @@ button.mark { display: inline-grid; place-items: center; padding: 0 calc(10px - 
 .style-pickers, .tabs { display: flex; align-items: center; gap: 4px; margin-left: -10px; }
 .style-picker.mark, .tabs button.mark { color: var(--pencil); }
 .style-picker.mark.on, .tabs button.mark.on { color: var(--ink); }
+.note-color-pickers { display: flex; align-items: center; gap: 3px; margin: 0 0 4px -2px; color: var(--pencil); }
+.note-color-pickers > span { padding: 0 5px; font-size: 11px; letter-spacing: 0.1em; text-transform: lowercase; }
+.color-picker.mark { color: var(--pencil); }
+.color-picker.mark.on { color: var(--ink); }
+.connector-control { margin: 11px 0 14px; color: var(--pencil); }
+.connector-control label { display: flex; justify-content: space-between; align-items: baseline; font-size: 11px; letter-spacing: 0.1em; text-transform: lowercase; }
+.connector-control output { color: var(--ink); font-variant-numeric: tabular-nums; }
+.connector-control input { display: block; width: 100%; min-height: 34px; margin: 1px 0 0; accent-color: var(--seal); touch-action: pan-y; }
+.connector-ends { display: flex; justify-content: space-between; margin-top: -2px; color: var(--pencil-faint); font-size: 9px; letter-spacing: 0.1em; text-transform: lowercase; }
 .tabs { margin-bottom: 6px; }
 #noteText {
   display: block;
@@ -378,9 +478,15 @@ button.mark { display: inline-grid; place-items: center; padding: 0 calc(10px - 
   user-select: text;
 }
 #noteText::placeholder { color: var(--pencil-faint); }
+.slip.white-ink #noteText { padding: 7px 9px; background: #302e2a; color: #fffdf7; }
+.slip.white-ink #noteText::placeholder { color: rgba(255, 253, 247, 0.62); }
 .chips { display: flex; flex-wrap: wrap; gap: 0 16px; margin-bottom: 6px; }
 .chip { padding: 0 2px; color: var(--pencil); font: 400 16px/1 var(--hand); letter-spacing: 0.02em; }
 #pad { display: none; width: 100%; aspect-ratio: 260 / 150; margin-bottom: 8px; touch-action: none; cursor: crosshair; }
+#pad.white-ink { border-radius: 4px; background: #302e2a; }
+#pad.white-ink .penline { color: #fffdf7; }
+#pad.white-ink #padGhost { fill: rgba(255, 253, 247, 0.65); }
+#pad.white-ink #padInk path { fill: #fffdf7; }
 .draw #pad { display: block; }
 .draw #noteText, .draw .chips { display: none; }
 #padGhost { fill: var(--pencil); font: var(--margin-weight) 10px var(--margin); letter-spacing: var(--margin-track); }
@@ -417,6 +523,7 @@ input[type="file"] { display: none; }
   #undoBtn { position: absolute; right: 0; bottom: calc(100% + 2px); }
   #editor { align-items: flex-end; padding: 10px 10px max(8px, var(--safe-bottom)); }
   .slip { width: min(520px, 100%); max-height: calc(100dvh - var(--safe-top) - 12px); padding: 22px 22px max(12px, var(--safe-bottom)); }
+  .margin.bottom-song { bottom: calc(var(--colophon-bottom) + 44px); max-width: 58vw; }
 }
 
 /* ---------- phones, landscape: one thin row of words above and below the print ---------- */

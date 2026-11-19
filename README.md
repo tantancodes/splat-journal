@@ -1,6 +1,6 @@
 # Splat Journal
 
-A 3D scrapbook. Each Gaussian-splat scan of a place is a journal page: float through it, pin thought-bubble or single-line notes (typed or handwritten), and doodle straight onto the scene. Sketchbook look: hand-drawn pen lines, one red seal.
+A mobile-first 3D memory journal. Each Gaussian-splat scan becomes a page: float through the place, leave typed or handwritten pencil and whisper notes, and draw directly on the scene. The interface is styled like a warm, hand-inked sketchbook.
 
 Stack: Vite · React 18 · TypeScript · three.js · [Spark](https://sparkjs.dev) (splat renderer).
 
@@ -27,7 +27,7 @@ Edits to anything in `src/` reload in the browser instantly.
 
 ### Install on iPhone
 
-After deploying the production build to an HTTPS host, open the site in Safari and choose **Share → Add to Home Screen**. The app includes a web app manifest and local app icons. It does not cache scenes or promise offline use; uploaded scans and journal notes stay in that browser's local storage.
+Open the production site in Safari and choose **Share → Add to Home Screen**. The app includes a web app manifest, standalone display settings, and local app icons. There is no service worker yet, so the app shell needs an internet connection. Scans and journal entries stay in that browser's IndexedDB.
 
 ### Production build
 
@@ -44,11 +44,12 @@ For Vercel, `vercel.json` pins the Vite build and `dist/` output. Once this fold
 
 - **open** – load a `.spz` or `.ply` scan (export from Scaniverse, Polycam, KIRI, Scantic). Upside down? tap **flip**.
 - **float** (default) – drag to look · W A S D or joystick to move · Q/E down and up · scroll or pinch to glide · Shift for speed. Tap **float** again for spin-around mode.
-- **note** – tap a spot on the scan. Choose a **thought** bubble or **line** annotation, then type a note or switch to **handwrite** and draw it.
-- **draw** – doodle onto the scene; strokes stay fixed in 3D. One finger draws, two fingers move. **undo** removes the last stroke.
-- Tap a bubble to edit or remove it. Tap the title to rename the page.
+- **note** – tap a spot on the scan. Choose a **pencil** note or **whisper**, set its ink to black or white, adjust the connector length, then type or handwrite a memory.
+- **draw** – doodle onto the scene; strokes stay fixed in 3D. Choose black or white ink. One finger draws, two fingers move. **undo** removes the last stroke.
+- Hand-drawn interface lines use **breathing** motion by default; **still** and **sketchy** are also available.
+- Tap a note to edit or remove it. Add a song to a page and tap the title to rename it.
 
-Notes, doodles, title and flip state are saved per scan in the browser's localStorage, so they come back when you reopen the same file on the same device.
+Notes, doodles, title, flip state, and page songs are saved per scan in IndexedDB. Data is local to the browser and does not sync between devices.
 
 ## Project layout
 
@@ -68,6 +69,7 @@ vite.config.ts · tsconfig.json · package.json
 
 ## Known limits
 
-- Scans are not shared: a scan lives in the browser you opened it in, and localStorage only remembers your notes for it. Sharing a page with someone else needs a backend (planned).
+- Scans and entries are not shared between devices. Moving a journal requires loading the scan on that device; backup and sync are not implemented yet.
+- The app shell is not cached for offline use yet.
 - The sample scene on first load is a small café table generated in code, so there is always something to pin a note on.
 - Fonts load from Google Fonts, so the pen lettering needs internet the first time.
